@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+
+  <title>Yu-Gi-Oh! Database</title>
+  <meta name="description" content="Base de datos Yu-Gi-Oh!: ver, buscar, agregar y editar cartas (TSV + Apps Script)." />
+
+  <!-- PWA / UI -->
+  <meta name="theme-color" content="#0b1020" />
+  <meta name="color-scheme" content="dark" />
+
+  <!-- PWA: Manifest (GitHub Pages friendly: relative) -->
+  <link rel="manifest" href="./manifest.webmanifest" />
+
+  <!-- Icons / Favicon -->
+  <link rel="icon" href="./yugioh.webp" />
+  <link rel="apple-touch-icon" href="./yugioh.webp" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="YGO DB" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="msapplication-TileColor" content="#0b1020" />
+
+  <!-- Preloads (arranque un poco más ágil) -->
+  <link rel="preload" href="./styles.css" as="style" />
+  <link rel="preload" href="./app.js" as="script" />
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+
+<body>
+  <!-- TOPBAR -->
+  <header class="topbar" role="banner">
+    <div class="brand">
+      <img class="brand__icon" src="./yugioh.webp" alt="Yu-Gi-Oh" />
+      <div class="brand__text">
+        <div class="brand__title">Base de datos Yu-Gi-Oh!</div>
+        <div class="brand__subtitle">Ver, buscar, agregar y editar cartas (TSV + Apps Script)</div>
+      </div>
+    </div>
+
+    <div class="topbar__right">
+      <div class="status" id="statusPill" title="Estado de carga" aria-live="polite">
+        <span class="dot" id="statusDot" aria-hidden="true"></span>
+        <span id="statusText">Cargando…</span>
+      </div>
+
+      <button class="btn" id="btnReload" type="button" title="Recargar datos">
+        ⟳ Recargar
+      </button>
+
+      <button class="btn btn--primary" id="btnNew" type="button" title="Agregar nueva carta">
+        + Nuevo
+      </button>
+    </div>
+  </header>
+
+  <!-- MAIN -->
+  <main class="layout" role="main">
+    <!-- LEFT: TABLE + FILTERS -->
+    <section class="panel" aria-label="Listado de cartas">
+      <div class="panel__head">
+        <div class="searchbox" role="search">
+          <span class="searchbox__icon" aria-hidden="true">⌕</span>
+          <input
+            id="search"
+            class="searchbox__input"
+            type="text"
+            placeholder="Buscar por nombre, edición, categoría, tipo, atributo, rareza, idioma…"
+            autocomplete="off"
+            inputmode="search"
+            aria-label="Buscar"
+          />
+          <button
+            class="searchbox__clear"
+            id="btnClearSearch"
+            type="button"
+            title="Limpiar búsqueda"
+            aria-label="Limpiar búsqueda"
+          >×</button>
+        </div>
+
+        <div class="filters">
+          <div class="segmented" role="tablist" aria-label="Filtro de categoría">
+            <button class="segmented__btn is-active" type="button" data-filter="all" role="tab" aria-selected="true">Todas</button>
+            <button class="segmented__btn" type="button" data-filter="monster" role="tab" aria-selected="false">Monstruos</button>
+            <button class="segmented__btn" type="button" data-filter="spell" role="tab" aria-selected="false">Magias</button>
+            <button class="segmented__btn" type="button" data-filter="trap" role="tab" aria-selected="false">Trampas</button>
+          </div>
+
+          <div class="mini" aria-label="Conteo de resultados">
+            <span class="mini__label">Mostrando:</span>
+            <span class="mini__value" id="countText">0</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel__body">
+        <div class="tablewrap" id="tableWrap">
+          <table class="table" id="dbTable" aria-label="Tabla de cartas"></table>
+        </div>
+      </div>
+
+      <div class="panel__foot">
+        <div class="hint">
+          Tip: clic en una fila para editar. Las listas desplegables se alimentan solas desde tu TSV (sin mantenimiento manual 😌).
+        </div>
+        <noscript>
+          <div class="hint">Esta app necesita JavaScript para funcionar.</div>
+        </noscript>
+      </div>
+    </section>
+
+    <!-- RIGHT: EDITOR DRAWER -->
+    <aside class="drawer" id="drawer" aria-hidden="true" aria-label="Editor de carta">
+      <div class="drawer__head">
+        <div>
+          <div class="drawer__title" id="drawerTitle">Nueva carta</div>
+          <div class="drawer__subtitle" id="drawerSubtitle">Completa la info y guarda</div>
+        </div>
+
+        <button class="iconbtn" id="btnCloseDrawer" type="button" title="Cerrar" aria-label="Cerrar">✕</button>
+      </div>
+
+      <form class="form" id="cardForm" autocomplete="off">
+        <!-- interno: índice de fila en Sheets (NO visible) -->
+        <input type="hidden" id="rowIndex" />
+
+        <!-- DATALISTS (se llenan desde app.js con valores únicos del TSV) -->
+        <datalist id="dlEdicion"></datalist>
+        <datalist id="dlAnio"></datalist>
+        <datalist id="dlMazo"></datalist>
+        <datalist id="dlCategoria"></datalist>
+        <datalist id="dlTipo"></datalist>
+        <datalist id="dlSubtipo"></datalist>
+        <datalist id="dlAtributo"></datalist>
+        <datalist id="dlRareza"></datalist>
+        <datalist id="dlIdioma"></datalist>
+
+        <div class="form__grid">
+          <div class="field">
+            <label for="num">#</label>
+            <input id="num" inputmode="numeric" placeholder="Ej: 152" />
+          </div>
+
+          <div class="field">
+            <label for="anio">Año</label>
+            <input id="anio" list="dlAnio" inputmode="numeric" placeholder="Ej: 2002" />
+          </div>
+
+          <div class="field field--wide">
+            <label for="nombre">Nombre</label>
+            <input id="nombre" placeholder="Ej: Dark Magician" />
+          </div>
+
+          <div class="field">
+            <label for="edicion">Edición</label>
+            <input id="edicion" list="dlEdicion" placeholder="Ej: 1st / Unlimited" />
+          </div>
+
+          <div class="field">
+            <label for="mazo">Mazo (Set code)</label>
+            <input id="mazo" list="dlMazo" placeholder="Ej: LOB-001 / BLTR-EN055" />
+          </div>
+
+          <div class="field">
+            <label for="categoria">Categoría</label>
+            <input id="categoria" list="dlCategoria" placeholder="Monster / Spell / Trap" />
+          </div>
+
+          <div class="field">
+            <label for="tipo">Tipo</label>
+            <input id="tipo" list="dlTipo" placeholder="Ej: Spellcaster / Dragon…" />
+          </div>
+
+          <div class="field">
+            <label for="subtipo">Subtipo</label>
+            <input id="subtipo" list="dlSubtipo" placeholder="Ej: Normal / Effect / Continuous…" />
+          </div>
+
+          <div class="field">
+            <label for="atributo">Atributo</label>
+            <input id="atributo" list="dlAtributo" placeholder="Light / Dark / Fire…" />
+          </div>
+
+          <div class="field">
+            <label for="rareza">Rareza</label>
+            <input id="rareza" list="dlRareza" placeholder="Common / Ultra Rare / Secret…" />
+          </div>
+
+          <div class="field">
+            <label for="cantidad">Cantidad</label>
+            <input id="cantidad" inputmode="numeric" placeholder="Ej: 1" />
+          </div>
+
+          <div class="field">
+            <label for="idioma">Idioma</label>
+            <input id="idioma" list="dlIdioma" placeholder="EN / ES / JP…" />
+          </div>
+
+          <div class="field">
+            <label for="precio">Precio</label>
+            <input id="precio" inputmode="decimal" placeholder="Ej: 15000" />
+          </div>
+
+          <div class="field">
+            <label for="fecha_compra">Fecha compra</label>
+            <input id="fecha_compra" placeholder="Ej: 2026-01-11" />
+          </div>
+
+          <div class="field field--wide">
+            <label for="notas">Notas</label>
+            <input id="notas" placeholder="Ej: Comprada en combo / esquina mínima doblada…" />
+          </div>
+
+          <div class="field field--wide">
+            <label for="imagenurl">ImagenURL</label>
+            <input id="imagenurl" placeholder="https://..." inputmode="url" />
+          </div>
+        </div>
+
+        <div class="form__actions">
+          <button class="btn" id="btnCancel" type="button">Cancelar</button>
+
+          <button class="btn btn--ghost" id="btnDuplicate" type="button" title="Crea una copia como nueva (opcional)">
+            Duplicar
+          </button>
+
+          <button class="btn btn--primary" id="btnSave" type="submit">
+            Guardar
+          </button>
+        </div>
+
+        <div class="form__meta" id="formMeta">
+          <span class="muted">Selecciona una fila para editar o crea una nueva carta.</span>
+        </div>
+      </form>
+    </aside>
+
+    <!-- OVERLAY (para mobile drawer) -->
+    <div class="overlay" id="overlay" hidden></div>
+  </main>
+
+  <!-- App (defer para no bloquear render) -->
+  <script src="./app.js" defer></script>
+
+  <!-- PWA: Service Worker register -->
+  <script>
+    (function () {
+      if (!('serviceWorker' in navigator)) return;
+
+      window.addEventListener('load', async () => {
+        try {
+          const reg = await navigator.serviceWorker.register('./sw.js', { scope: './' });
+
+          // Opcional: escuchar updates del SW (silencioso)
+          if (reg && reg.waiting) {
+            // Si quieres luego, acá puedes mostrar un toast tipo:
+            // "Hay actualización. Recarga."
+          }
+        } catch (e) {
+          // La app igual funciona sin SW. Qué lindo cuando el mundo coopera.
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
