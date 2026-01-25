@@ -22,7 +22,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="msapplication-TileColor" content="#0b1020" />
 
-  <!-- Preloads (arranque un poco más ágil) -->
+  <!-- Preloads -->
   <link rel="preload" href="./styles.css" as="style" />
   <link rel="preload" href="./app.js" as="script" />
 
@@ -33,7 +33,7 @@
 <body>
   <!-- TOPBAR -->
   <header class="topbar" role="banner">
-    <div class="brand">
+    <div class="brand" aria-label="Marca">
       <img class="brand__icon" src="./yugioh.webp" alt="Yu-Gi-Oh" />
       <div class="brand__text">
         <div class="brand__title">Base de datos Yu-Gi-Oh!</div>
@@ -41,7 +41,7 @@
       </div>
     </div>
 
-    <div class="topbar__right">
+    <div class="topbar__right" aria-label="Acciones principales">
       <div class="status" id="statusPill" title="Estado de carga" aria-live="polite">
         <span class="dot" id="statusDot" aria-hidden="true"></span>
         <span id="statusText">Cargando…</span>
@@ -67,10 +67,10 @@
           <input
             id="search"
             class="searchbox__input"
-            type="text"
+            type="search"
             placeholder="Buscar por nombre, edición, categoría, tipo, atributo, rareza, idioma…"
             autocomplete="off"
-            inputmode="search"
+            spellcheck="false"
             aria-label="Buscar"
           />
           <button
@@ -124,11 +124,11 @@
         <button class="iconbtn" id="btnCloseDrawer" type="button" title="Cerrar" aria-label="Cerrar">✕</button>
       </div>
 
-      <form class="form" id="cardForm" autocomplete="off">
+      <form class="form" id="cardForm" autocomplete="off" novalidate>
         <!-- interno: índice de fila en Sheets (NO visible) -->
         <input type="hidden" id="rowIndex" />
 
-        <!-- DATALISTS (se llenan desde app.js con valores únicos del TSV) -->
+        <!-- DATALISTS -->
         <datalist id="dlEdicion"></datalist>
         <datalist id="dlAnio"></datalist>
         <datalist id="dlMazo"></datalist>
@@ -142,12 +142,12 @@
         <div class="form__grid">
           <div class="field">
             <label for="num">#</label>
-            <input id="num" inputmode="numeric" placeholder="Ej: 152" />
+            <input id="num" type="number" inputmode="numeric" min="0" step="1" placeholder="Ej: 152" />
           </div>
 
           <div class="field">
             <label for="anio">Año</label>
-            <input id="anio" list="dlAnio" inputmode="numeric" placeholder="Ej: 2002" />
+            <input id="anio" list="dlAnio" type="number" inputmode="numeric" min="1900" max="2100" step="1" placeholder="Ej: 2002" />
           </div>
 
           <div class="field field--wide">
@@ -185,6 +185,17 @@
             <input id="atributo" list="dlAtributo" placeholder="Light / Dark / Fire…" />
           </div>
 
+          <!-- STATS: SOLO MONSTRUOS (para que luego lo controles desde app.js) -->
+          <div class="field" data-only="monster" title="Solo aplica para Monstruos">
+            <label for="atk">ATK</label>
+            <input id="atk" type="number" inputmode="numeric" min="0" step="1" placeholder="Ej: 2500" />
+          </div>
+
+          <div class="field" data-only="monster" title="Solo aplica para Monstruos">
+            <label for="def">DEF</label>
+            <input id="def" type="number" inputmode="numeric" min="0" step="1" placeholder="Ej: 2100" />
+          </div>
+
           <div class="field">
             <label for="rareza">Rareza</label>
             <input id="rareza" list="dlRareza" placeholder="Common / Ultra Rare / Secret…" />
@@ -192,7 +203,7 @@
 
           <div class="field">
             <label for="cantidad">Cantidad</label>
-            <input id="cantidad" inputmode="numeric" placeholder="Ej: 1" />
+            <input id="cantidad" type="number" inputmode="numeric" min="0" step="1" placeholder="Ej: 1" />
           </div>
 
           <div class="field">
@@ -202,12 +213,12 @@
 
           <div class="field">
             <label for="precio">Precio</label>
-            <input id="precio" inputmode="decimal" placeholder="Ej: 15000" />
+            <input id="precio" type="number" inputmode="decimal" min="0" step="0.01" placeholder="Ej: 15000" />
           </div>
 
           <div class="field">
-            <label for="fecha_compra">Fecha compra</label>
-            <input id="fecha_compra" placeholder="Ej: 2026-01-11" />
+            <label for="fecha_compra">Fecha de ingreso</label>
+            <input id="fecha_compra" type="date" placeholder="YYYY-MM-DD" />
           </div>
 
           <div class="field field--wide">
@@ -217,7 +228,7 @@
 
           <div class="field field--wide">
             <label for="imagenurl">ImagenURL</label>
-            <input id="imagenurl" placeholder="https://..." inputmode="url" />
+            <input id="imagenurl" type="url" placeholder="https://..." inputmode="url" />
           </div>
         </div>
 
@@ -243,7 +254,7 @@
     <div class="overlay" id="overlay" hidden></div>
   </main>
 
-  <!-- App (defer para no bloquear render) -->
+  <!-- App -->
   <script src="./app.js" defer></script>
 
   <!-- PWA: Service Worker register -->
@@ -254,14 +265,9 @@
       window.addEventListener('load', async () => {
         try {
           const reg = await navigator.serviceWorker.register('./sw.js', { scope: './' });
-
-          // Opcional: escuchar updates del SW (silencioso)
-          if (reg && reg.waiting) {
-            // Si quieres luego, acá puedes mostrar un toast tipo:
-            // "Hay actualización. Recarga."
-          }
+          // Si luego quieres toast de update, aquí se engancha.
         } catch (e) {
-          // La app igual funciona sin SW. Qué lindo cuando el mundo coopera.
+          // Sin drama: la app funciona sin SW.
         }
       });
     })();
