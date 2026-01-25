@@ -1,17 +1,18 @@
 /* =============================================================================
-   sw.js — Yu-Gi-Oh! DB (GitHub Pages PWA)
-   - App Shell cached (offline-ready)
-   - Stale-While-Revalidate for static assets
-   - Network-First for TSV (fallback to cache)
+   sw.js — Yu-Gi-Oh! DB (GitHub Pages PWA) — vPRO
+   - App Shell precached (offline-ready)
+   - Navigation fallback to cached index.html
+   - Same-origin assets: Stale-While-Revalidate (ignoring cache-bust params)
+   - TSV: Network-First (fallback to cached data)
 ============================================================================= */
 
-const VERSION = "ygo-db-v1.0.0";
+const VERSION = "ygo-db-v1.1.0"; // <- súbelo cuando publiques cambios
 const STATIC_CACHE = `${VERSION}-static`;
-const DATA_CACHE = `${VERSION}-data`;
+const DATA_CACHE   = `${VERSION}-data`;
 
 /**
- * Ajusta esta lista si cambias nombres o rutas.
- * OJO GitHub Pages: rutas relativas se resuelven bien si el SW está en la raíz.
+ * GitHub Pages: el SW debe estar en la raíz del proyecto
+ * y estas rutas deben ser relativas.
  */
 const APP_SHELL = [
   "./",
@@ -19,26 +20,35 @@ const APP_SHELL = [
   "./styles.css",
   "./app.js",
   "./manifest.webmanifest",
-  "./yugioh.webp"
+  "./yugioh.webp",
+  // Si luego agregas iconos PNG 192/512, inclúyelos aquí:
+  // "./icons/icon-192.png",
+  // "./icons/icon-512.png",
 ];
 
-// Dominio que consideramos "data" (tu TSV de Google Sheets publicado)
+// Hosts que consideramos "data" (tu TSV publicado)
 const TSV_HOSTS = new Set([
   "docs.google.com",
-  "docs.googleusercontent.com"
+  "docs.googleusercontent.com",
 ]);
 
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(STATIC_CACHE);
-    await cache.addAll(APP_SHELL);
-    self.skipWaiting();
+
+    // cache: "reload" fuerza a ir a red en install para evitar basura vieja
+    await cache.addAll(
+      APP_SHELL.map((url) => new Request(url, { cache: "reload" }))
+    );
+
+    // Activa el SW nuevo sin esperar pestañas viejas
+    await self.skipWaiting();
   })());
 });
 
 self.addEventListener("activate", (event) => {
   event.waitUntil((async () => {
-    // Limpia caches viejos
+    // Borra caches antiguos
     const keys = await caches.keys();
     await Promise.all(
       keys
@@ -46,50 +56,75 @@ self.addEventListener("activate", (event) => {
         .map((k) => caches.delete(k))
     );
 
-    self.clients.claim();
+    await self.clients.claim();
   })());
 });
 
 self.addEventListener("fetch", (event) => {
   const req = event.request;
 
-  // Solo GET. Nada de meterle mano a POST (tu API de Apps Script).
+  // Solo GET. POST es para tu Apps Script (no lo tocamos).
   if (req.method !== "GET") return;
 
   const url = new URL(req.url);
 
-  // Navegación: devuelve index.html (modo SPA-like). Ideal para PWA install.
+  // 1) Navegación (abrir la app / refresh / rutas). Fallback a index.html
   if (req.mode === "navigate") {
-    event.respondWith((async () => {
-      try {
-        const net = await fetch(req);
-        // Guarda copia del index por si luego offline
-        const cache = await caches.open(STATIC_CACHE);
-        cache.put("./index.html", net.clone());
-        return net;
-      } catch {
-        const cache = await caches.open(STATIC_CACHE);
-        return (await cache.match("./index.html")) || Response.error();
-      }
-    })());
+    event.respondWith(navigationHandler(req));
     return;
   }
 
-  // TSV/data: network-first, fallback a cache
-  if (TSV_HOSTS.has(url.hostname) && url.searchParams.get("output") === "tsv") {
+  // 2) TSV publicado: Network-First (fallback cache)
+  if (isTSVRequest(url)) {
     event.respondWith(networkFirst(req, DATA_CACHE));
     return;
   }
 
-  // Assets estáticos del mismo origen: stale-while-revalidate
+  // 3) Assets del mismo origen: Stale-While-Revalidate
   if (url.origin === self.location.origin) {
-    event.respondWith(staleWhileRevalidate(req, STATIC_CACHE));
+    event.respondWith(staleWhileRevalidateSameOrigin(req, STATIC_CACHE));
     return;
   }
 
-  // Default: intenta cache, si no, red
+  // 4) Default: cache-first (por si pides algo externo que sí quieras cachear)
   event.respondWith(cacheFirst(req, STATIC_CACHE));
 });
+
+/* =========================
+   Helpers
+========================= */
+
+function isTSVRequest(url) {
+  if (!TSV_HOSTS.has(url.hostname)) return false;
+
+  // Tu caso típico: ...&output=tsv
+  const out = url.searchParams.get("output");
+  if (out && out.toLowerCase() === "tsv") return true;
+
+  // Fallback: si la ruta o query menciona tsv, lo tratamos como data
+  return url.pathname.toLowerCase().includes("tsv") || url.href.toLowerCase().includes("output=tsv");
+}
+
+async function navigationHandler(request) {
+  try {
+    // Network-first para navegación: así actualiza el index cuando hay red
+    const net = await fetch(request);
+
+    // Guarda una copia del index.html cuando haya red (para offline)
+    if (net && net.ok) {
+      const cache = await caches.open(STATIC_CACHE);
+      cache.put("./index.html", net.clone());
+    }
+
+    return net;
+  } catch {
+    const cache = await caches.open(STATIC_CACHE);
+    return (await cache.match("./index.html")) || new Response("Offline", {
+      status: 503,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
+  }
+}
 
 /* =========================
    Strategies
@@ -97,27 +132,35 @@ self.addEventListener("fetch", (event) => {
 
 async function cacheFirst(request, cacheName) {
   const cache = await caches.open(cacheName);
+
   const cached = await cache.match(request, { ignoreSearch: false });
   if (cached) return cached;
 
   const net = await fetch(request);
-  // Solo cachea respuestas ok
-  if (net && net.ok) cache.put(request, net.clone());
+  if (shouldCacheResponse(net)) cache.put(request, net.clone());
   return net;
 }
 
-async function staleWhileRevalidate(request, cacheName) {
+/**
+ * Stale-While-Revalidate para mismo origen
+ * - Ignora cache-bust query (?v=, ?_ts=, etc.) al buscar en cache
+ *   para evitar duplicar entradas inútiles.
+ */
+async function staleWhileRevalidateSameOrigin(request, cacheName) {
   const cache = await caches.open(cacheName);
-  const cached = await cache.match(request, { ignoreSearch: false });
+
+  // Match “normalizado” sin querystring
+  const normalized = stripSearch(request);
+
+  const cached = await cache.match(normalized, { ignoreSearch: true });
 
   const fetchPromise = fetch(request)
     .then((net) => {
-      if (net && net.ok) cache.put(request, net.clone());
+      if (shouldCacheResponse(net)) cache.put(normalized, net.clone());
       return net;
     })
     .catch(() => null);
 
-  // Si hay cache, úsalo ya; si no, espera red
   return cached || (await fetchPromise) || Response.error();
 }
 
@@ -125,13 +168,41 @@ async function networkFirst(request, cacheName) {
   const cache = await caches.open(cacheName);
   try {
     const net = await fetch(request);
-    if (net && net.ok) cache.put(request, net.clone());
+    if (shouldCacheResponse(net)) cache.put(request, net.clone());
     return net;
   } catch {
     const cached = await cache.match(request, { ignoreSearch: true });
     return cached || new Response("Offline y sin datos en caché 😶", {
       status: 503,
-      headers: { "Content-Type": "text/plain; charset=utf-8" }
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
     });
   }
 }
+
+/* =========================
+   Response / Request utils
+========================= */
+
+function shouldCacheResponse(resp) {
+  // Evita cachear errores o respuestas raras
+  if (!resp) return false;
+  if (resp.type === "opaque") return false; // cross-origin sin CORS: mejor no
+  return resp.ok;
+}
+
+function stripSearch(request) {
+  const url = new URL(request.url);
+  url.search = ""; // borra querystring
+  return new Request(url.toString(), {
+    method: "GET",
+    headers: request.headers,
+    mode: request.mode,
+    credentials: request.credentials,
+    redirect: request.redirect,
+    referrer: request.referrer,
+    referrerPolicy: request.referrerPolicy,
+    integrity: request.integrity,
+    cache: "no-store",
+  });
+}
+  
