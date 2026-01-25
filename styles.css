@@ -1,11 +1,8 @@
 /* =============================================================================
-   Yu-Gi-Oh! DB — styles.css (vNext+++ PWA)
-   - Oscuro, glassy, gamer-pro
-   - PWA polish: safe-area, dvh, scroll, touch targets
-   - Ajustado a:
-     ✅ ID oculto en la tabla (no se muestra)
-     ✅ ATK/DEF en monstruos
-     ✅ "Fecha compra" renombrada a "Fecha" / "Fecha ingreso"
+   Yu-Gi-Oh! DB — styles.css (vNext++++)
+   - Oscuro, glassy, gamer-pro (mantiene diseño original)
+   - Ajustes sutiles de detalle visual + optimización
+   - Soporta columna opcional: Nivel ⭐ (estrellas)
 ============================================================================= */
 
 /* =========================
@@ -18,7 +15,7 @@
   --panel-2: #020617;
 
   --line: rgba(148,163,184,.18);
-  --line-strong: rgba(148,163,184,.28);
+  --line-strong: rgba(148,163,184,.30);
 
   --muted: #8aa0c6;
   --text: #e5edff;
@@ -35,6 +32,7 @@
   /* Shadows / blur */
   --shadow: 0 12px 40px rgba(0,0,0,.40);
   --shadow-soft: 0 10px 26px rgba(0,0,0,.28);
+  --shadow-edge: 0 0 0 1px rgba(255,255,255,.03) inset;
   --blur: saturate(140%) blur(8px);
 
   /* Focus */
@@ -70,10 +68,12 @@ body{
   color: var(--text);
   line-height:1.35;
 
-  /* PWA / mobile polish */
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   overscroll-behavior: none;
+
+  /* evita “saltos” por scrollbars en layouts con overflow */
+  scrollbar-gutter: stable both-edges;
 }
 
 /* Better selection */
@@ -89,7 +89,7 @@ body{
   border-radius: 999px;
 }
 *::-webkit-scrollbar-thumb:hover{
-  background: rgba(148,163,184,.35);
+  background: rgba(148,163,184,.36);
 }
 *::-webkit-scrollbar-track{
   background: rgba(2,6,23,.35);
@@ -109,7 +109,6 @@ body{
 a{ color: inherit; text-decoration: none; }
 a:hover{ text-decoration: underline; }
 
-/* Focus: consistente y útil */
 :focus{ outline: none; }
 :focus-visible{
   box-shadow: var(--focus);
@@ -146,7 +145,8 @@ a:hover{ text-decoration: underline; }
     background .15s ease,
     border-color .15s ease,
     opacity .15s ease,
-    filter .15s ease;
+    filter .15s ease,
+    box-shadow .15s ease;
 
   box-shadow: 0 0 0 rgba(0,0,0,0);
   user-select: none;
@@ -156,6 +156,7 @@ a:hover{ text-decoration: underline; }
 .btn:hover{
   background: rgba(255,255,255,.07);
   border-color: var(--line-strong);
+  box-shadow: 0 0 0 1px rgba(255,255,255,.02) inset;
 }
 
 .btn:active{ transform: translateY(1px); }
@@ -163,8 +164,8 @@ a:hover{ text-decoration: underline; }
 
 .btn--primary{
   background: linear-gradient(180deg, #4f8cff, #2563eb);
-  border-color: rgba(37,99,235,.90);
-  box-shadow: 0 10px 26px rgba(37,99,235,.18);
+  border-color: rgba(37,99,235,.92);
+  box-shadow: 0 10px 26px rgba(37,99,235,.18), 0 0 0 1px rgba(255,255,255,.05) inset;
 }
 .btn--primary:hover{ filter: brightness(1.06); }
 
@@ -195,7 +196,8 @@ a:hover{ text-decoration: underline; }
     background .15s ease,
     border-color .15s ease,
     color .15s ease,
-    transform .06s ease;
+    transform .06s ease,
+    box-shadow .15s ease;
 
   user-select:none;
   -webkit-tap-highlight-color: transparent;
@@ -204,6 +206,7 @@ a:hover{ text-decoration: underline; }
   color: var(--text);
   background: rgba(255,255,255,.06);
   border-color: var(--line-strong);
+  box-shadow: 0 0 0 1px rgba(255,255,255,.02) inset;
 }
 .iconbtn:active{ transform: translateY(1px); }
 
@@ -229,6 +232,9 @@ a:hover{ text-decoration: underline; }
   background: rgba(11,16,32,.72);
   backdrop-filter: var(--blur);
   border-bottom: 1px solid var(--line);
+
+  /* sutil “edge” para separación */
+  box-shadow: 0 10px 30px rgba(0,0,0,.18);
 }
 
 .brand{
@@ -242,6 +248,7 @@ a:hover{ text-decoration: underline; }
   border-radius: 10px;
   box-shadow: var(--shadow-soft);
   border: 1px solid rgba(148,163,184,.12);
+  background: rgba(255,255,255,.02);
 }
 .brand__text{
   display:flex;
@@ -283,6 +290,7 @@ a:hover{ text-decoration: underline; }
   font-size: 12px;
   color: var(--muted);
   background: rgba(2,6,23,.35);
+  box-shadow: 0 0 0 1px rgba(255,255,255,.02) inset;
 }
 .status .dot{
   width:8px; height:8px;
@@ -436,8 +444,6 @@ a:hover{ text-decoration: underline; }
   overflow: auto;
   background: rgba(2,6,23,.62);
   -webkit-overflow-scrolling: touch;
-
-  /* Hace que no “salte” el layout cuando aparece scrollbar */
   scrollbar-gutter: stable both-edges;
 }
 
@@ -448,13 +454,14 @@ a:hover{ text-decoration: underline; }
   background: transparent;
 }
 
-/* Sticky header más legible */
+/* Sticky header más legible + micro gradient */
 .table thead th{
   position: sticky;
   top: 0;
   z-index: 2;
 
-  background: rgba(2,6,23,.96);
+  background:
+    linear-gradient(180deg, rgba(2,6,23,.98), rgba(2,6,23,.92));
   backdrop-filter: var(--blur);
 
   text-align:left;
@@ -464,6 +471,8 @@ a:hover{ text-decoration: underline; }
 
   border-bottom:1px solid var(--line);
   white-space: nowrap;
+
+  box-shadow: 0 1px 0 rgba(255,255,255,.03) inset;
 }
 
 /* Row cells */
@@ -482,9 +491,9 @@ a:hover{ text-decoration: underline; }
   white-space: nowrap;
 }
 
-/* Zebra + hover */
+/* Zebra + hover (más suave y con “focus glow”) */
 .table tbody tr{
-  transition: background .12s ease, outline-color .12s ease;
+  transition: background .12s ease, outline-color .12s ease, box-shadow .12s ease;
   cursor:pointer;
 }
 .table tbody tr:nth-child(2n){
@@ -493,39 +502,66 @@ a:hover{ text-decoration: underline; }
 .table tbody tr:hover{
   background: rgba(255,255,255,.06);
 }
+.table tbody tr:hover td{
+  border-bottom-color: rgba(148,163,184,.18);
+}
 
 /* Focus row */
 .table tbody tr:focus-visible{
   outline: 2px solid rgba(59,130,246,.65);
   outline-offset: -2px;
+  box-shadow: 0 0 0 1px rgba(255,255,255,.02) inset;
 }
 
 /* === Column tuning (asumiendo ID oculto) ===
-   Orden típico visible:
-   1 # | 2 Edición | 3 Año | 4 Mazo | 5 Nombre | 6 Categoría | 7 Tipo | 8 Subtipo
-   9 Atributo | 10 ATK | 11 DEF | 12 Rareza | 13 Cantidad | 14 Idioma | 15 Precio
-   16 Fecha | 17 Notas | 18 ImagenURL
+   Orden típico visible (cuando existe Nivel):
+   1 # | 2 Edición | 3 Año | 4 Mazo | 5 Nombre | 6 Categoría | 7 Tipo | 8 Nivel ⭐
+   9 Subtipo | 10 Atributo | 11 ATK | 12 DEF | 13 Rareza | 14 Cantidad | 15 Idioma
+   16 Precio | 17 Fecha | 18 Notas | 19 ImagenURL
+
+   Si NO existe Nivel, todo corre una posición hacia la izquierda.
 */
 
-/* Monospace para códigos y URLs */
+/* Monospace para códigos y URLs (aplica aunque cambie el orden: son heurísticas) */
 .table tbody td:nth-child(1),   /* # */
 .table tbody td:nth-child(4),   /* Mazo */
-.table tbody td:nth-child(18){  /* ImagenURL */
+.table tbody td:nth-child(19),  /* ImagenURL (si existe Nivel) */
+.table tbody td:nth-child(18){  /* ImagenURL (si NO existe Nivel) */
   font-family: var(--mono);
   font-size: 12.5px;
   color: rgba(229,237,255,.92);
 }
 
-/* Números alineados (año, atk, def, cantidad, precio) */
+/* Números alineados (año, nivel, atk, def, cantidad, precio) */
 .table tbody td:nth-child(3),   /* Año */
-.table tbody td:nth-child(10),  /* ATK */
-.table tbody td:nth-child(11),  /* DEF */
-.table tbody td:nth-child(13),  /* Cantidad */
-.table tbody td:nth-child(15){  /* Precio */
+.table tbody td:nth-child(8),   /* Nivel ⭐ (si existe) */
+.table tbody td:nth-child(11),  /* ATK (si existe Nivel) */
+.table tbody td:nth-child(12),  /* DEF (si existe Nivel) */
+.table tbody td:nth-child(14),  /* Cantidad (si existe Nivel) */
+.table tbody td:nth-child(16),  /* Precio (si existe Nivel) */
+.table tbody td:nth-child(10),  /* Atributo fallback alignment */
+.table tbody td:nth-child(13),  /* Cantidad (si NO Nivel) */
+.table tbody td:nth-child(15){  /* Precio (si NO Nivel) */
   font-variant-numeric: tabular-nums;
 }
 
-/* ATK/DEF más compactos */
+/* Nivel ⭐ centrado suave */
+.table thead th:nth-child(8),
+.table tbody td:nth-child(8){
+  text-align: center;
+  max-width: 92px;
+}
+
+/* ATK/DEF más compactos (si existe Nivel) */
+.table thead th:nth-child(11),
+.table thead th:nth-child(12),
+.table tbody td:nth-child(11),
+.table tbody td:nth-child(12){
+  text-align: right;
+  max-width: 90px;
+}
+
+/* ATK/DEF fallback (si NO existe Nivel) */
 .table thead th:nth-child(10),
 .table thead th:nth-child(11),
 .table tbody td:nth-child(10),
@@ -534,7 +570,11 @@ a:hover{ text-decoration: underline; }
   max-width: 90px;
 }
 
-/* Precio y Cantidad un poco más “tabla” */
+/* Cantidad / Precio (ambas variantes) */
+.table thead th:nth-child(14),
+.table tbody td:nth-child(14),
+.table thead th:nth-child(16),
+.table tbody td:nth-child(16),
 .table thead th:nth-child(13),
 .table tbody td:nth-child(13),
 .table thead th:nth-child(15),
@@ -542,11 +582,13 @@ a:hover{ text-decoration: underline; }
   text-align: right;
 }
 
-/* Fecha centrada suave */
+/* Fecha */
+.table thead th:nth-child(17),
+.table tbody td:nth-child(17),
 .table thead th:nth-child(16),
 .table tbody td:nth-child(16){
   text-align: left;
-  max-width: 140px;
+  max-width: 150px;
 }
 
 /* =========================
@@ -562,6 +604,7 @@ a:hover{ text-decoration: underline; }
 
   background:
     radial-gradient(900px 600px at 0% 0%, rgba(59,130,246,.10), transparent 55%),
+    radial-gradient(700px 500px at 100% 20%, rgba(34,197,94,.07), transparent 60%),
     linear-gradient(180deg, rgba(255,255,255,.03), rgba(0,0,0,.12)),
     var(--panel);
 
@@ -592,6 +635,7 @@ a:hover{ text-decoration: underline; }
   border-bottom:1px solid var(--line);
   background: rgba(2,6,23,.30);
   backdrop-filter: var(--blur);
+  box-shadow: 0 1px 0 rgba(255,255,255,.03) inset;
 }
 
 .drawer__title{ font-weight:800; letter-spacing:.2px; }
@@ -645,6 +689,12 @@ input::placeholder{ color: rgba(138,160,198,.60); }
 input:focus{
   border-color: rgba(59,130,246,.80);
   box-shadow: var(--focus);
+  background: rgba(2,6,23,.86);
+}
+
+/* sutil feedback si el browser marca inválido */
+input:invalid{
+  border-color: rgba(239,68,68,.35);
 }
 
 /* Better numeric alignment */
@@ -730,9 +780,26 @@ input[inputmode="decimal"]{
 @media (max-width: 640px){
   .topbar{ flex-wrap:wrap; }
   .brand{ min-width: 0; }
-  .topbar__right{ width:100%; justify-content:space-between; }
+  .topbar__right{
+    width:100%;
+    justify-content:space-between;
+    gap: 8px;
+  }
 
-  .filters{ width:100%; justify-content:space-between; }
+  .filters{
+    width:100%;
+    justify-content:space-between;
+    gap: 10px;
+  }
+  .segmented{
+    width: 100%;
+    justify-content: space-between;
+  }
+  .segmented__btn{
+    flex: 1;
+    text-align: center;
+  }
+
   .drawer{ width: 100%; max-width: 100vw; }
   .form__grid{ grid-template-columns: 1fr; }
   .searchbox{ width:100%; min-width: 0; }
