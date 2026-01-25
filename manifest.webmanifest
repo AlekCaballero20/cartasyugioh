@@ -1,0 +1,14 @@
+{
+  "name": "Yu-Gi-Oh! Database",
+  "short_name": "YGO DB",
+  "description": "Base de datos Yu-Gi-Oh!: ver, buscar, agregar y editar cartas.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0b1020",
+  "theme_color": "#0b1020",
+  "icons": [
+    { "src": "./yugioh.webp", "sizes": "192x192", "type": "image/webp", "purpose": "any" },
+    { "src": "./yugioh.webp", "sizes": "512x512", "type": "image/webp", "purpose": "any" }
+  ]
+}
