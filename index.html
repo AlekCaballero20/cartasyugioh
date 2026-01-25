@@ -18,7 +18,7 @@
   <link rel="icon" href="./yugioh.webp" />
   <link rel="apple-touch-icon" href="./yugioh.webp" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-title" content="YGO DB" />
+  <meta name="apple-mobile-web-app-title" content="DB Cartas Yu Gi OH" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="msapplication-TileColor" content="#0b1020" />
 
@@ -68,7 +68,7 @@
             id="search"
             class="searchbox__input"
             type="search"
-            placeholder="Buscar por nombre, edición, categoría, tipo, atributo, rareza, idioma…"
+            placeholder="Buscar por nombre, edición, categoría, tipo, nivel, atributo, rareza, idioma…"
             autocomplete="off"
             spellcheck="false"
             aria-label="Buscar"
@@ -142,93 +142,108 @@
         <div class="form__grid">
           <div class="field">
             <label for="num">#</label>
-            <input id="num" type="number" inputmode="numeric" min="0" step="1" placeholder="Ej: 152" />
+            <input id="num" type="number" inputmode="numeric" min="0" step="1" placeholder="Ej: 152" autocomplete="off" />
           </div>
 
           <div class="field">
             <label for="anio">Año</label>
-            <input id="anio" list="dlAnio" type="number" inputmode="numeric" min="1900" max="2100" step="1" placeholder="Ej: 2002" />
+            <input id="anio" list="dlAnio" type="number" inputmode="numeric" min="1900" max="2100" step="1" placeholder="Ej: 2002" autocomplete="off" />
           </div>
 
           <div class="field field--wide">
             <label for="nombre">Nombre</label>
-            <input id="nombre" placeholder="Ej: Dark Magician" />
+            <input id="nombre" placeholder="Ej: Dark Magician" autocomplete="off" />
           </div>
 
           <div class="field">
             <label for="edicion">Edición</label>
-            <input id="edicion" list="dlEdicion" placeholder="Ej: 1st / Unlimited" />
+            <input id="edicion" list="dlEdicion" placeholder="Ej: 1st / Unlimited" autocomplete="off" />
           </div>
 
           <div class="field">
             <label for="mazo">Mazo (Set code)</label>
-            <input id="mazo" list="dlMazo" placeholder="Ej: LOB-001 / BLTR-EN055" />
+            <input id="mazo" list="dlMazo" placeholder="Ej: LOB-001 / BLTR-EN055" autocomplete="off" />
           </div>
 
           <div class="field">
             <label for="categoria">Categoría</label>
-            <input id="categoria" list="dlCategoria" placeholder="Monster / Spell / Trap" />
+            <input id="categoria" list="dlCategoria" placeholder="Monster / Spell / Trap" autocomplete="off" />
           </div>
 
           <div class="field">
             <label for="tipo">Tipo</label>
-            <input id="tipo" list="dlTipo" placeholder="Ej: Spellcaster / Dragon…" />
+            <input id="tipo" list="dlTipo" placeholder="Ej: Spellcaster / Dragon…" autocomplete="off" />
+          </div>
+
+          <!-- ⭐ NIVEL / ESTRELLAS: SOLO MONSTRUOS (columna en Sheets después de Tipo) -->
+          <div class="field" data-only="monster" title="Solo aplica para Monstruos">
+            <label for="nivel">Nivel ⭐</label>
+            <input
+              id="nivel"
+              type="number"
+              inputmode="numeric"
+              min="1"
+              max="13"
+              step="1"
+              placeholder="Ej: 8"
+              autocomplete="off"
+            />
           </div>
 
           <div class="field">
             <label for="subtipo">Subtipo</label>
-            <input id="subtipo" list="dlSubtipo" placeholder="Ej: Normal / Effect / Continuous…" />
+            <input id="subtipo" list="dlSubtipo" placeholder="Ej: Normal / Effect / Continuous…" autocomplete="off" />
           </div>
 
           <div class="field">
             <label for="atributo">Atributo</label>
-            <input id="atributo" list="dlAtributo" placeholder="Light / Dark / Fire…" />
+            <input id="atributo" list="dlAtributo" placeholder="Light / Dark / Fire…" autocomplete="off" />
           </div>
 
-          <!-- STATS: SOLO MONSTRUOS (para que luego lo controles desde app.js) -->
+          <!-- STATS: SOLO MONSTRUOS -->
           <div class="field" data-only="monster" title="Solo aplica para Monstruos">
             <label for="atk">ATK</label>
-            <input id="atk" type="number" inputmode="numeric" min="0" step="1" placeholder="Ej: 2500" />
+            <input id="atk" type="number" inputmode="numeric" min="0" step="1" placeholder="Ej: 2500" autocomplete="off" />
           </div>
 
           <div class="field" data-only="monster" title="Solo aplica para Monstruos">
             <label for="def">DEF</label>
-            <input id="def" type="number" inputmode="numeric" min="0" step="1" placeholder="Ej: 2100" />
+            <input id="def" type="number" inputmode="numeric" min="0" step="1" placeholder="Ej: 2100" autocomplete="off" />
           </div>
 
           <div class="field">
             <label for="rareza">Rareza</label>
-            <input id="rareza" list="dlRareza" placeholder="Common / Ultra Rare / Secret…" />
+            <input id="rareza" list="dlRareza" placeholder="Common / Ultra Rare / Secret…" autocomplete="off" />
           </div>
 
           <div class="field">
             <label for="cantidad">Cantidad</label>
-            <input id="cantidad" type="number" inputmode="numeric" min="0" step="1" placeholder="Ej: 1" />
+            <input id="cantidad" type="number" inputmode="numeric" min="0" step="1" placeholder="Ej: 1" autocomplete="off" />
           </div>
 
           <div class="field">
             <label for="idioma">Idioma</label>
-            <input id="idioma" list="dlIdioma" placeholder="EN / ES / JP…" />
+            <input id="idioma" list="dlIdioma" placeholder="EN / ES / JP…" autocomplete="off" />
           </div>
 
           <div class="field">
             <label for="precio">Precio</label>
-            <input id="precio" type="number" inputmode="decimal" min="0" step="0.01" placeholder="Ej: 15000" />
+            <input id="precio" type="number" inputmode="decimal" min="0" step="0.01" placeholder="Ej: 15000" autocomplete="off" />
           </div>
 
           <div class="field">
             <label for="fecha_compra">Fecha de ingreso</label>
-            <input id="fecha_compra" type="date" placeholder="YYYY-MM-DD" />
+            <input id="fecha_compra" type="date" placeholder="YYYY-MM-DD" autocomplete="off" />
           </div>
 
           <div class="field field--wide">
             <label for="notas">Notas</label>
-            <input id="notas" placeholder="Ej: Comprada en combo / esquina mínima doblada…" />
+            <input id="notas" placeholder="Ej: Comprada en combo / esquina mínima doblada…" autocomplete="off" />
           </div>
 
           <div class="field field--wide">
             <label for="imagenurl">ImagenURL</label>
-            <input id="imagenurl" type="url" placeholder="https://..." inputmode="url" />
+            <input id="imagenurl" type="url" placeholder="https://..." inputmode="url" autocomplete="off" />
           </div>
         </div>
 
@@ -264,7 +279,7 @@
 
       window.addEventListener('load', async () => {
         try {
-          const reg = await navigator.serviceWorker.register('./sw.js', { scope: './' });
+          await navigator.serviceWorker.register('./sw.js', { scope: './' });
           // Si luego quieres toast de update, aquí se engancha.
         } catch (e) {
           // Sin drama: la app funciona sin SW.
