@@ -1,5 +1,5 @@
 /* ============================
-   Yu-Gi-Oh DB - Frontend App (vNext++ PWA Ready)
+   Yu-Gi-Oh DB - Frontend App (vNext+++)
    - Read: TSV published
    - Write: Apps Script WebApp (POST add/update) WITHOUT CORS PRE-FLIGHT
    - UX/Robust:
@@ -8,7 +8,7 @@
      ✅ Debounce en búsqueda
      ✅ Render eficiente + tabla sin mostrar _id
      ✅ Column mapping por header (si cambias orden en Sheets, no muere)
-     ✅ ATK/DEF (solo Monstruos)
+     ✅ Monster-only fields: NIVEL ⭐ + ATK/DEF (solo Monstruos)
 ============================ */
 
 (() => {
@@ -24,8 +24,8 @@
     "https://script.google.com/macros/s/AKfycbxx2369sUDC1HNtwOFaeFtjdsn5aCZaZ-WW_2N7yVClTcfrUobf81j5ofOEmdIsTcnYgg/exec";
 
   const STORAGE = {
-    tsvCache: "ygo_tsv_cache_v2",
-    tsvCacheAt: "ygo_tsv_cache_at_v2",
+    tsvCache: "ygo_tsv_cache_v3",
+    tsvCacheAt: "ygo_tsv_cache_at_v3",
   };
 
   const NET = {
@@ -48,6 +48,8 @@
     nombre: ["nombre", "name"],
     categoria: ["categoria", "categoría", "category"],
     tipo: ["tipo", "type"],
+    // ⭐ NUEVO: Nivel / Estrellas (columna en Sheets después de Tipo)
+    nivel: ["nivel", "level", "estrellas", "stars"],
     subtipo: ["subtipo", "sub type", "subtype"],
     atributo: ["atributo", "attribute"],
     atk: ["atk"],
@@ -72,6 +74,8 @@
     "mazo",
     "categoria",
     "tipo",
+    // ⭐ nuevo
+    "nivel",
     "subtipo",
     "atributo",
     "atk",
@@ -261,7 +265,7 @@
       if (e.key === "Escape") closeDrawer();
     });
 
-    // Click en tabla (delegación global, sin re-enganchar cada render)
+    // Click en tabla (delegación)
     dom.table?.addEventListener("click", (e) => {
       const tr = e.target?.closest?.("tbody tr");
       if (!tr) return;
@@ -276,7 +280,7 @@
       openEdit(row, sheetRowIndex);
     });
 
-    // Categoria: mostrar/ocultar campos monster-only + tip
+    // Categoria: mostrar/ocultar monster-only + tip
     $("categoria")?.addEventListener("input", () => {
       updateMonsterOnlyVisibility();
       const cat = norm($("categoria")?.value);
@@ -558,6 +562,7 @@
     const body = rows.slice(1);
 
     const idIdx = col("_id");
+    const nivelIdx = col("nivel");
 
     // columnas visibles (oculta _id)
     const visibleCols = header
@@ -586,7 +591,21 @@
 
       visibleCols.forEach((i) => {
         const td = document.createElement("td");
-        td.textContent = row?.[i] || "";
+
+        // ⭐ Render especial: Nivel -> estrellas si es número
+        if (i === nivelIdx) {
+          const raw = (row?.[i] || "").toString().trim();
+          const n = parseInt(raw, 10);
+          if (Number.isFinite(n) && n > 0) {
+            td.textContent = "⭐".repeat(Math.min(n, 13));
+            td.title = `Nivel: ${n}`;
+          } else {
+            td.textContent = raw;
+          }
+        } else {
+          td.textContent = row?.[i] || "";
+        }
+
         tr.appendChild(td);
       });
 
@@ -682,7 +701,6 @@
   }
 
   function fillFormFromRow(row) {
-    // Helpers para leer por columna si existe
     const get = (k) => {
       const i = col(k);
       return i >= 0 ? (row?.[i] || "") : "";
@@ -695,6 +713,9 @@
     $("nombre").value = get("nombre");
     $("categoria").value = get("categoria");
     $("tipo").value = get("tipo");
+    // ⭐ nuevo
+    if ($("nivel")) $("nivel").value = get("nivel");
+
     $("subtipo").value = get("subtipo");
     $("atributo").value = get("atributo");
     $("atk").value = get("atk");
@@ -738,11 +759,12 @@
     set("nombre", val("nombre"));
     set("categoria", normalizeCategoria(val("categoria")));
     set("tipo", val("tipo"));
+
+    // Monster-only (Nivel + ATK/DEF)
+    const isMonster = isMonsterCategoria(val("categoria"));
+    set("nivel", isMonster ? val("nivel") : "");
     set("subtipo", val("subtipo"));
     set("atributo", val("atributo"));
-
-    // ATK/DEF: solo monstruos. Si no es monster, se limpian.
-    const isMonster = isMonsterCategoria(val("categoria"));
     set("atk", isMonster ? val("atk") : "");
     set("def", isMonster ? val("def") : "");
 
@@ -776,19 +798,22 @@
   }
 
   function updateMonsterOnlyVisibility() {
-    const cat = val("categoria");
-    const monster = isMonsterCategoria(cat);
+    const monster = isMonsterCategoria(val("categoria"));
 
     const nodes = qsa('[data-only="monster"]');
     nodes.forEach((wrap) => {
-      // ocultar visual
       wrap.style.display = monster ? "" : "none";
 
-      // deshabilitar inputs internos para que no se guarden
       const inputs = qsa("input,select,textarea", wrap);
       inputs.forEach((el) => {
         el.disabled = !monster;
-        if (!monster && (el.id === "atk" || el.id === "def")) el.value = "";
+
+        // Limpia monster-only cuando NO es monster
+        if (!monster) {
+          if (el.id === "atk" || el.id === "def" || el.id === "nivel") {
+            el.value = "";
+          }
+        }
       });
     });
   }
@@ -832,10 +857,13 @@
       return;
     }
 
-    // mini-validación ATK/DEF si monster
+    // mini-validación monster-only
     if (isMonsterCategoria(val("categoria"))) {
+      const lvl = val("nivel");
       const atk = val("atk");
       const def = val("def");
+
+      if (lvl && !isFiniteInteger(lvl)) { toast("Nivel debe ser entero."); $("nivel")?.focus(); return; }
       if (atk && !isFiniteNumber(atk)) { toast("ATK debe ser número."); $("atk")?.focus(); return; }
       if (def && !isFiniteNumber(def)) { toast("DEF debe ser número."); $("def")?.focus(); return; }
     }
@@ -976,6 +1004,11 @@
   function isFiniteNumber(x) {
     const n = Number(String(x).replace(",", "."));
     return Number.isFinite(n);
+  }
+
+  function isFiniteInteger(x) {
+    const n = Number(String(x).replace(",", "."));
+    return Number.isFinite(n) && Number.isInteger(n);
   }
 
   function formatTimeAgo(ts) {
