@@ -1,14 +1,14 @@
 /* ============================
-   Yu-Gi-Oh DB - Frontend App (vNext+ PWA Ready)
+   Yu-Gi-Oh DB - Frontend App (vNext++ PWA Ready)
    - Read: TSV published
    - Write: Apps Script WebApp (POST add/update) WITHOUT CORS PRE-FLIGHT
    - UX/Robust:
-     ✅ Offline-light: cache TSV en localStorage (última copia)
-     ✅ Status online/offline + eventos online/offline
+     ✅ Offline-light: cache TSV en localStorage
+     ✅ Status online/offline
      ✅ Debounce en búsqueda
-     ✅ Render más eficiente (event delegation en tbody)
-     ✅ Segmented: aria-selected actualizado
-     ✅ Mejor manejo de errores + timeouts
+     ✅ Render eficiente + tabla sin mostrar _id
+     ✅ Column mapping por header (si cambias orden en Sheets, no muere)
+     ✅ ATK/DEF (solo Monstruos)
 ============================ */
 
 (() => {
@@ -21,11 +21,11 @@
     "https://docs.google.com/spreadsheets/d/e/2PACX-1vTr_dlYQi8JAzT_PrHeXVPimnOnXYw4VmBmonSSZhbv_k7lKp10csg5YSX2fCGOUWMnLanIbddNjga7/pub?gid=2059687180&single=true&output=tsv";
 
   const API_URL =
-    "https://script.google.com/macros/s/AKfycbxO2gLI_HIAxukEdzxqeV7PBDxaXGutcqUD1B_fG5-zsrxjv12PdaKfNqMdr3WNTFWEbw/exec";
+    "https://script.google.com/macros/s/AKfycbxx2369sUDC1HNtwOFaeFtjdsn5aCZaZ-WW_2N7yVClTcfrUobf81j5ofOEmdIsTcnYgg/exec";
 
   const STORAGE = {
-    tsvCache: "ygo_tsv_cache_v1",
-    tsvCacheAt: "ygo_tsv_cache_at_v1",
+    tsvCache: "ygo_tsv_cache_v2",
+    tsvCacheAt: "ygo_tsv_cache_at_v2",
   };
 
   const NET = {
@@ -35,31 +35,35 @@
   };
 
   /**
-   * Column mapping (A–Q) según columnas fijas:
-   * _id | # | Edición | Año | Mazo | Nombre | Categoría | Tipo | Subtipo | Atributo
-   * Rareza | Cantidad | Idioma | Precio | Fecha compra | Notas | ImagenURL
+   * Mapeo por header (robusto).
+   * Si cambias el orden de columnas en Sheets, esto sigue funcionando
+   * mientras los nombres existan (o similares).
    */
-  const COL = {
-    _id: 0,
-    num: 1,
-    edicion: 2,
-    anio: 3,
-    mazo: 4,
-    nombre: 5,
-    categoria: 6,
-    tipo: 7,
-    subtipo: 8,
-    atributo: 9,
-    rareza: 10,
-    cantidad: 11,
-    idioma: 12,
-    precio: 13,
-    fecha_compra: 14,
-    notas: 15,
-    imagenurl: 16,
+  const HEADER_ALIASES = {
+    _id: ["_id", "id", "uuid"],
+    num: ["#", "num", "numero", "número"],
+    edicion: ["edicion", "edición"],
+    anio: ["anio", "año"],
+    mazo: ["mazo", "set", "setcode", "set code", "codigo", "código"],
+    nombre: ["nombre", "name"],
+    categoria: ["categoria", "categoría", "category"],
+    tipo: ["tipo", "type"],
+    subtipo: ["subtipo", "sub type", "subtype"],
+    atributo: ["atributo", "attribute"],
+    atk: ["atk"],
+    def: ["def"],
+    escalaTipo: ["escalatipo", "escala tipo", "scale type", "scale"],
+    escalaValor: ["escalavalor", "escala valor", "scale value"],
+    rareza: ["rareza", "rarity"],
+    cantidad: ["cantidad", "qty", "quantity"],
+    idioma: ["idioma", "language", "lang"],
+    precio: ["precio", "price", "valor"],
+    fecha_compra: ["fecha_compra", "fecha compra", "fecha", "fecha ingreso", "fecha de ingreso"],
+    notas: ["notas", "notes"],
+    imagenurl: ["imagenurl", "imagen url", "image", "imageurl", "image url", "url imagen", "url"],
   };
 
-  // IDs de inputs del formulario (de tu index.html actualizado)
+  // IDs de inputs del formulario (según tu index.html)
   const FORM_FIELDS = [
     "num",
     "anio",
@@ -70,6 +74,8 @@
     "tipo",
     "subtipo",
     "atributo",
+    "atk",
+    "def",
     "rareza",
     "cantidad",
     "idioma",
@@ -92,7 +98,7 @@
     idioma: "dlIdioma",
   };
 
-  // Defaults “por si la base está vacía” (no reemplaza lo que ya tengas en TSV)
+  // Defaults “por si la base está vacía”
   const DEFAULTS = {
     edicion: ["1st", "Unlimited", "Limited"],
     categoria: ["Monster", "Spell", "Trap"],
@@ -182,6 +188,9 @@
     selected: null, // { sheetRowIndex, rowArray }
     isOnline: navigator.onLine,
     lastLoadedAt: null,
+
+    // índices calculados desde el header
+    col: {},
   };
 
   /* =========================
@@ -192,13 +201,12 @@
   function init() {
     bindUI();
     bindNetwork();
-    loadTSV(false); // primer load
+    loadTSV(false);
   }
 
   function bindNetwork() {
     window.addEventListener("online", () => {
       state.isOnline = true;
-      // No recargamos automático para no “saltarle” al usuario; solo avisamos
       setStatus("ok", "Online");
       toast("Conexión restaurada ✅");
     });
@@ -253,8 +261,24 @@
       if (e.key === "Escape") closeDrawer();
     });
 
-    // UX hint: Spell/Trap normalmente sin atributo
-    $("categoria")?.addEventListener("change", () => {
+    // Click en tabla (delegación global, sin re-enganchar cada render)
+    dom.table?.addEventListener("click", (e) => {
+      const tr = e.target?.closest?.("tbody tr");
+      if (!tr) return;
+
+      const id = tr.dataset.id || "";
+      if (!id) return;
+
+      const row = findRowById(id);
+      if (!row) return;
+
+      const sheetRowIndex = resolveSheetRowIndexById(id);
+      openEdit(row, sheetRowIndex);
+    });
+
+    // Categoria: mostrar/ocultar campos monster-only + tip
+    $("categoria")?.addEventListener("input", () => {
+      updateMonsterOnlyVisibility();
       const cat = norm($("categoria")?.value);
       if (cat === "spell" || cat === "trap") {
         const atr = ($("atributo")?.value || "").trim();
@@ -276,7 +300,6 @@
       const rows = tsvToArray(text);
       if (!rows.length || rows.length < 1) throw new Error("TSV vacío");
 
-      // OK: guardar en estado + cache local
       applyRows(rows);
       cacheTSV(text);
 
@@ -313,7 +336,10 @@
     state.header = rows[0] || [];
     state.lastLoadedAt = Date.now();
 
-    // Alimenta datalists con valores únicos
+    // construir índice de columnas basado en header
+    state.col = buildColIndexFromHeader(state.header);
+
+    // Alimenta datalists
     hydrateDatalistsFromRows(rows);
 
     applyFiltersAndRender();
@@ -324,7 +350,7 @@
       localStorage.setItem(STORAGE.tsvCache, tsvText);
       localStorage.setItem(STORAGE.tsvCacheAt, String(Date.now()));
     } catch {
-      // si storage está bloqueado, no hacemos drama
+      // storage bloqueado: seguimos sin drama
     }
   }
 
@@ -365,10 +391,49 @@
   }
 
   function tsvToArray(tsv) {
-    return (tsv || "")
-      .trim()
-      .split("\n")
-      .map((line) => line.split("\t").map((x) => (x ?? "").trim()));
+    const clean = String(tsv || "").replace(/\r/g, "").trim();
+    if (!clean) return [];
+    return clean.split("\n").map((line) => line.split("\t").map((x) => (x ?? "").trim()));
+  }
+
+  /* =========================
+     COLUMN INDEX (HEADER-BASED)
+  ========================= */
+  function buildColIndexFromHeader(header) {
+    const normHeader = (header || []).map((h) => norm(h));
+    const out = {};
+
+    for (const key of Object.keys(HEADER_ALIASES)) {
+      const aliases = HEADER_ALIASES[key].map((a) => norm(a));
+      let idx = -1;
+
+      for (let i = 0; i < normHeader.length; i++) {
+        const h = normHeader[i];
+        if (!h) continue;
+        if (aliases.includes(h)) { idx = i; break; }
+      }
+
+      // fallback: contiene texto
+      if (idx === -1) {
+        for (let i = 0; i < normHeader.length; i++) {
+          const h = normHeader[i];
+          if (!h) continue;
+          if (aliases.some((a) => h.includes(a))) { idx = i; break; }
+        }
+      }
+
+      if (idx !== -1) out[key] = idx;
+    }
+
+    // Compatibilidad: si no encuentra _id, asumimos que está en la 1ra
+    if (out._id == null && (header?.[0] || "").trim()) out._id = 0;
+
+    return out;
+  }
+
+  function col(key) {
+    const idx = state.col?.[key];
+    return Number.isInteger(idx) ? idx : -1;
   }
 
   /* =========================
@@ -377,19 +442,21 @@
   function hydrateDatalistsFromRows(rows) {
     const data = (rows || []).slice(1);
 
-    const uniq = (idx) =>
-      uniqueSorted(data.map((r) => (r?.[idx] || "").trim()).filter(Boolean));
+    const uniq = (idx) => {
+      if (idx < 0) return [];
+      return uniqueSorted(data.map((r) => (r?.[idx] || "").trim()).filter(Boolean));
+    };
 
     const values = {
-      edicion: uniq(COL.edicion),
-      anio: uniq(COL.anio),
-      mazo: uniq(COL.mazo),
-      categoria: uniq(COL.categoria),
-      tipo: uniq(COL.tipo),
-      subtipo: uniq(COL.subtipo),
-      atributo: uniq(COL.atributo),
-      rareza: uniq(COL.rareza),
-      idioma: uniq(COL.idioma),
+      edicion: uniq(col("edicion")),
+      anio: uniq(col("anio")),
+      mazo: uniq(col("mazo")),
+      categoria: uniq(col("categoria")),
+      tipo: uniq(col("tipo")),
+      subtipo: uniq(col("subtipo")),
+      atributo: uniq(col("atributo")),
+      rareza: uniq(col("rareza")),
+      idioma: uniq(col("idioma")),
     };
 
     for (const k of Object.keys(values)) {
@@ -470,7 +537,8 @@
   function passesCategoryFilter(row, filter) {
     if (!filter || filter === "all") return true;
 
-    const cat = norm(row?.[COL.categoria] || "");
+    const idxCat = col("categoria");
+    const cat = norm(idxCat >= 0 ? (row?.[idxCat] || "") : "");
 
     const isMonster = cat === "monster" || cat === "monstruo" || cat === "monstruos";
     const isSpell = cat === "spell" || cat === "magia" || cat === "magias";
@@ -489,45 +557,43 @@
     const header = rows[0] || [];
     const body = rows.slice(1);
 
+    const idIdx = col("_id");
+
+    // columnas visibles (oculta _id)
+    const visibleCols = header
+      .map((_, i) => i)
+      .filter((i) => i !== idIdx);
+
     // Thead
     const thead = document.createElement("thead");
     const trh = document.createElement("tr");
-    header.forEach((h) => {
+    visibleCols.forEach((i) => {
       const th = document.createElement("th");
-      th.textContent = h || "";
+      th.textContent = header[i] || "";
       trh.appendChild(th);
     });
     thead.appendChild(trh);
 
-    // Tbody (con data-id y delegación)
+    // Tbody
     const tbody = document.createElement("tbody");
+    const frag = document.createDocumentFragment();
 
-    body.forEach((row) => {
+    for (const row of body) {
       const tr = document.createElement("tr");
-      const id = row?.[COL._id] || "";
+
+      const id = idIdx >= 0 ? (row?.[idIdx] || "") : "";
       if (id) tr.dataset.id = id;
 
-      row.forEach((cell) => {
+      visibleCols.forEach((i) => {
         const td = document.createElement("td");
-        td.textContent = cell || "";
+        td.textContent = row?.[i] || "";
         tr.appendChild(td);
       });
 
-      tbody.appendChild(tr);
-    });
+      frag.appendChild(tr);
+    }
 
-    // Delegación: un solo listener (más rápido)
-    tbody.addEventListener("click", (e) => {
-      const tr = e.target?.closest?.("tr");
-      if (!tr) return;
-
-      const id = tr.dataset.id || "";
-      const row = id ? findRowById(id) : null;
-      if (!row) return;
-
-      const sheetRowIndex = resolveSheetRowIndexById(id);
-      openEdit(row, sheetRowIndex);
-    });
+    tbody.appendChild(frag);
 
     dom.table.innerHTML = "";
     dom.table.appendChild(thead);
@@ -536,13 +602,19 @@
 
   function findRowById(_id) {
     const all = state.rows || [];
-    const idx = all.findIndex((r, i) => i > 0 && (r?.[COL._id] || "") === _id);
+    const idIdx = col("_id");
+    if (idIdx < 0) return null;
+
+    const idx = all.findIndex((r, i) => i > 0 && (r?.[idIdx] || "") === _id);
     return idx >= 1 ? all[idx] : null;
   }
 
   function resolveSheetRowIndexById(_id) {
     const all = state.rows || [];
-    const idx = all.findIndex((r, i) => i > 0 && (r?.[COL._id] || "") === _id);
+    const idIdx = col("_id");
+    if (idIdx < 0) return "";
+
+    const idx = all.findIndex((r, i) => i > 0 && (r?.[idIdx] || "") === _id);
     return idx >= 1 ? idx + 1 : "";
   }
 
@@ -562,6 +634,8 @@
     // default categoría
     if ($("categoria") && !$("categoria").value) $("categoria").value = "Monster";
 
+    updateMonsterOnlyVisibility();
+
     setFormMeta("Nueva carta.");
     openDrawer();
   }
@@ -576,6 +650,8 @@
     if (dom.rowIndex) dom.rowIndex.value = sheetRowIndex || "";
 
     fillFormFromRow(row);
+    updateMonsterOnlyVisibility();
+
     if (dom.btnDuplicate) dom.btnDuplicate.disabled = false;
 
     setFormMeta("Editando.");
@@ -588,7 +664,6 @@
     dom.drawer.setAttribute("aria-hidden", "false");
     if (dom.overlay) dom.overlay.hidden = false;
 
-    // foco
     setTimeout(() => $("nombre")?.focus(), 0);
   }
 
@@ -607,54 +682,88 @@
   }
 
   function fillFormFromRow(row) {
-    $("num").value = row?.[COL.num] || "";
-    $("edicion").value = row?.[COL.edicion] || "";
-    $("anio").value = row?.[COL.anio] || "";
-    $("mazo").value = row?.[COL.mazo] || "";
-    $("nombre").value = row?.[COL.nombre] || "";
-    $("categoria").value = row?.[COL.categoria] || "";
-    $("tipo").value = row?.[COL.tipo] || "";
-    $("subtipo").value = row?.[COL.subtipo] || "";
-    $("atributo").value = row?.[COL.atributo] || "";
-    $("rareza").value = row?.[COL.rareza] || "";
-    $("cantidad").value = row?.[COL.cantidad] || "";
-    $("idioma").value = row?.[COL.idioma] || "";
-    $("precio").value = row?.[COL.precio] || "";
-    $("fecha_compra").value = row?.[COL.fecha_compra] || "";
-    $("notas").value = row?.[COL.notas] || "";
-    $("imagenurl").value = row?.[COL.imagenurl] || "";
+    // Helpers para leer por columna si existe
+    const get = (k) => {
+      const i = col(k);
+      return i >= 0 ? (row?.[i] || "") : "";
+    };
+
+    $("num").value = get("num");
+    $("edicion").value = get("edicion");
+    $("anio").value = get("anio");
+    $("mazo").value = get("mazo");
+    $("nombre").value = get("nombre");
+    $("categoria").value = get("categoria");
+    $("tipo").value = get("tipo");
+    $("subtipo").value = get("subtipo");
+    $("atributo").value = get("atributo");
+    $("atk").value = get("atk");
+    $("def").value = get("def");
+    $("rareza").value = get("rareza");
+    $("cantidad").value = get("cantidad");
+    $("idioma").value = get("idioma");
+    $("precio").value = get("precio");
+    $("fecha_compra").value = get("fecha_compra");
+    $("notas").value = get("notas");
+    $("imagenurl").value = get("imagenurl");
   }
 
   function buildRowForSave() {
-    const existingId = state.selected?.rowArray?.[COL._id] || "";
+    const headerLen = (state.header || []).length || 0;
+    if (!headerLen) throw new Error("No header loaded");
+
+    const existingId = (() => {
+      const idIdx = col("_id");
+      if (idIdx < 0) return "";
+      return state.selected?.rowArray?.[idIdx] || "";
+    })();
+
     const _id = existingId || makeId();
 
-    // Siempre array exacto (17 cols)
-    const row = new Array(17).fill("");
+    // Array exacto del tamaño del header actual
+    const row = new Array(headerLen).fill("");
 
-    row[COL._id] = _id;
-    row[COL.num] = val("num");
-    row[COL.edicion] = val("edicion");
-    row[COL.anio] = val("anio");
-    row[COL.mazo] = val("mazo");
-    row[COL.nombre] = val("nombre");
-    row[COL.categoria] = normalizeCategoria(val("categoria"));
-    row[COL.tipo] = val("tipo");
-    row[COL.subtipo] = val("subtipo");
-    row[COL.atributo] = val("atributo");
-    row[COL.rareza] = val("rareza");
-    row[COL.cantidad] = val("cantidad");
-    row[COL.idioma] = val("idioma");
-    row[COL.precio] = val("precio");
-    row[COL.fecha_compra] = val("fecha_compra");
-    row[COL.notas] = val("notas");
-    row[COL.imagenurl] = val("imagenurl");
+    // setters seguros
+    const set = (k, value) => {
+      const i = col(k);
+      if (i < 0) return;
+      row[i] = (value ?? "").toString().trim();
+    };
+
+    set("_id", _id);
+    set("num", val("num"));
+    set("edicion", val("edicion"));
+    set("anio", val("anio"));
+    set("mazo", val("mazo"));
+    set("nombre", val("nombre"));
+    set("categoria", normalizeCategoria(val("categoria")));
+    set("tipo", val("tipo"));
+    set("subtipo", val("subtipo"));
+    set("atributo", val("atributo"));
+
+    // ATK/DEF: solo monstruos. Si no es monster, se limpian.
+    const isMonster = isMonsterCategoria(val("categoria"));
+    set("atk", isMonster ? val("atk") : "");
+    set("def", isMonster ? val("def") : "");
+
+    set("rareza", val("rareza"));
+    set("cantidad", val("cantidad"));
+    set("idioma", val("idioma"));
+    set("precio", val("precio"));
+    set("fecha_compra", val("fecha_compra"));
+    set("notas", val("notas"));
+    set("imagenurl", val("imagenurl"));
 
     return row;
   }
 
   function val(id) {
     return ($(id)?.value || "").trim();
+  }
+
+  function isMonsterCategoria(x) {
+    const n = norm(x);
+    return n === "monster" || n === "monstruo" || n === "monstruos";
   }
 
   function normalizeCategoria(x) {
@@ -664,6 +773,24 @@
     if (n === "spell" || n === "magia" || n === "magias") return "Spell";
     if (n === "trap" || n === "trampa" || n === "trampas") return "Trap";
     return (x || "").trim();
+  }
+
+  function updateMonsterOnlyVisibility() {
+    const cat = val("categoria");
+    const monster = isMonsterCategoria(cat);
+
+    const nodes = qsa('[data-only="monster"]');
+    nodes.forEach((wrap) => {
+      // ocultar visual
+      wrap.style.display = monster ? "" : "none";
+
+      // deshabilitar inputs internos para que no se guarden
+      const inputs = qsa("input,select,textarea", wrap);
+      inputs.forEach((el) => {
+        el.disabled = !monster;
+        if (!monster && (el.id === "atk" || el.id === "def")) el.value = "";
+      });
+    });
   }
 
   function setFormMeta(msg) {
@@ -705,7 +832,22 @@
       return;
     }
 
-    const payloadRow = buildRowForSave();
+    // mini-validación ATK/DEF si monster
+    if (isMonsterCategoria(val("categoria"))) {
+      const atk = val("atk");
+      const def = val("def");
+      if (atk && !isFiniteNumber(atk)) { toast("ATK debe ser número."); $("atk")?.focus(); return; }
+      if (def && !isFiniteNumber(def)) { toast("DEF debe ser número."); $("def")?.focus(); return; }
+    }
+
+    let payloadRow;
+    try {
+      payloadRow = buildRowForSave();
+    } catch (err) {
+      console.error(err);
+      toast("No se pudo preparar el registro (header no cargado).");
+      return;
+    }
 
     try {
       state.isSaving = true;
@@ -730,10 +872,9 @@
       toast(res.msg || "Guardado ✅");
       setFormMeta("Listo.");
 
-      // Refresh TSV (bypass cache)
+      // Refresh TSV
       await loadTSV(true);
 
-      // Si fue add, cerramos
       if (action === "add") closeDrawer();
     } catch (err) {
       console.error(err);
@@ -752,7 +893,7 @@
     try {
       const resp = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        headers: { "Content-Type": "text/plain;charset=utf-8" }, // clave: evita preflight
         redirect: "follow",
         body,
         signal: ctrl.signal,
@@ -830,6 +971,11 @@
       clearTimeout(t);
       t = setTimeout(() => fn(...args), ms);
     };
+  }
+
+  function isFiniteNumber(x) {
+    const n = Number(String(x).replace(",", "."));
+    return Number.isFinite(n);
   }
 
   function formatTimeAgo(ts) {
