@@ -1,8 +1,11 @@
 /* =============================================================================
-   Yu-Gi-Oh! DB — styles.css (vNext++ PWA)
+   Yu-Gi-Oh! DB — styles.css (vNext+++ PWA)
    - Oscuro, glassy, gamer-pro
    - PWA polish: safe-area, dvh, scroll, touch targets
-   - Mejoras: accesibilidad, focus, tabla más legible, drawer más fino, motion
+   - Ajustado a:
+     ✅ ID oculto en la tabla (no se muestra)
+     ✅ ATK/DEF en monstruos
+     ✅ "Fecha compra" renombrada a "Fecha" / "Fecha ingreso"
 ============================================================================= */
 
 /* =========================
@@ -299,8 +302,6 @@ a:hover{ text-decoration: underline; }
   grid-template-columns: 1fr;
   gap: 16px;
   padding: var(--pad);
-
-  /* dvh para móviles (mejor que 100vh) */
   min-height: 100dvh;
 }
 
@@ -431,11 +432,13 @@ a:hover{ text-decoration: underline; }
    TABLE
 ========================= */
 .tablewrap{
-  /* Ajuste PWA: que el área sea realmente scrollable en móviles */
   max-height: calc(100dvh - 220px);
   overflow: auto;
   background: rgba(2,6,23,.62);
   -webkit-overflow-scrolling: touch;
+
+  /* Hace que no “salte” el layout cuando aparece scrollbar */
+  scrollbar-gutter: stable both-edges;
 }
 
 .table{
@@ -473,13 +476,13 @@ a:hover{ text-decoration: underline; }
 
   vertical-align: top;
 
-  max-width: 260px;
+  max-width: 280px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* Zebra + hover + active */
+/* Zebra + hover */
 .table tbody tr{
   transition: background .12s ease, outline-color .12s ease;
   cursor:pointer;
@@ -491,25 +494,59 @@ a:hover{ text-decoration: underline; }
   background: rgba(255,255,255,.06);
 }
 
-/* Focus row (when clicked via keyboard in future) */
+/* Focus row */
 .table tbody tr:focus-visible{
   outline: 2px solid rgba(59,130,246,.65);
   outline-offset: -2px;
 }
 
-/* Codes / urls in monospace */
-.table tbody td:nth-child(1),   /* _id */
-.table tbody td:nth-child(5),   /* Mazo */
-.table tbody td:nth-child(17){  /* ImagenURL (si existe en tabla) */
+/* === Column tuning (asumiendo ID oculto) ===
+   Orden típico visible:
+   1 # | 2 Edición | 3 Año | 4 Mazo | 5 Nombre | 6 Categoría | 7 Tipo | 8 Subtipo
+   9 Atributo | 10 ATK | 11 DEF | 12 Rareza | 13 Cantidad | 14 Idioma | 15 Precio
+   16 Fecha | 17 Notas | 18 ImagenURL
+*/
+
+/* Monospace para códigos y URLs */
+.table tbody td:nth-child(1),   /* # */
+.table tbody td:nth-child(4),   /* Mazo */
+.table tbody td:nth-child(18){  /* ImagenURL */
   font-family: var(--mono);
   font-size: 12.5px;
   color: rgba(229,237,255,.92);
 }
 
-/* Subtle number alignment for price/qty if columns exist in those positions */
-.table tbody td:nth-child(12),  /* Cantidad */
-.table tbody td:nth-child(14){  /* Precio */
+/* Números alineados (año, atk, def, cantidad, precio) */
+.table tbody td:nth-child(3),   /* Año */
+.table tbody td:nth-child(10),  /* ATK */
+.table tbody td:nth-child(11),  /* DEF */
+.table tbody td:nth-child(13),  /* Cantidad */
+.table tbody td:nth-child(15){  /* Precio */
   font-variant-numeric: tabular-nums;
+}
+
+/* ATK/DEF más compactos */
+.table thead th:nth-child(10),
+.table thead th:nth-child(11),
+.table tbody td:nth-child(10),
+.table tbody td:nth-child(11){
+  text-align: right;
+  max-width: 90px;
+}
+
+/* Precio y Cantidad un poco más “tabla” */
+.table thead th:nth-child(13),
+.table tbody td:nth-child(13),
+.table thead th:nth-child(15),
+.table tbody td:nth-child(15){
+  text-align: right;
+}
+
+/* Fecha centrada suave */
+.table thead th:nth-child(16),
+.table tbody td:nth-child(16){
+  text-align: left;
+  max-width: 140px;
 }
 
 /* =========================
@@ -702,7 +739,7 @@ input[inputmode="decimal"]{
 }
 
 /* =========================
-   PRINT SAFETY (optional)
+   PRINT SAFETY
 ========================= */
 @media print{
   body{ background: #fff; color:#000; }
