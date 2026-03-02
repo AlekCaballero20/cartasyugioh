@@ -1,18 +1,22 @@
 /* =============================================================================
-   sw.js — Yu-Gi-Oh! DB (GitHub Pages PWA) — vPRO
+   sw.js — Yu-Gi-Oh! DB (GitHub Pages PWA) — v1.3.0
    - App Shell precached (offline-ready)
-   - Navigation fallback to cached index.html
+   - Navigation fallback to cached index.html (SPA-friendly)
    - Same-origin assets: Stale-While-Revalidate (ignoring cache-bust params)
-   - TSV: Network-First (fallback to cached data)
+   - TSV (Sheets published): Network-First + cache fallback (ignoring search if needed)
+   - Avoids caching opaque / non-OK responses
+   - Supports SKIP_WAITING + CLIENTS_CLAIM messages
 ============================================================================= */
 
-const VERSION = "ygo-db-v1.1.0"; // <- súbelo cuando publiques cambios
+"use strict";
+
+const VERSION = "ygo-db-v1.3.0"; // súbelo cuando publiques cambios
 const STATIC_CACHE = `${VERSION}-static`;
-const DATA_CACHE   = `${VERSION}-data`;
+const DATA_CACHE = `${VERSION}-data`;
 
 /**
- * GitHub Pages: el SW debe estar en la raíz del proyecto
- * y estas rutas deben ser relativas.
+ * App shell (rutas relativas para GitHub Pages).
+ * Mantén esto alineado con tu repo.
  */
 const APP_SHELL = [
   "./",
@@ -21,108 +25,125 @@ const APP_SHELL = [
   "./app.js",
   "./manifest.webmanifest",
   "./yugioh.webp",
-  // Si luego agregas iconos PNG 192/512, inclúyelos aquí:
-  // "./icons/icon-192.png",
-  // "./icons/icon-512.png",
+  "./icons/icon-192.png",
+  "./icons/icon-512.png",
 ];
 
-// Hosts que consideramos "data" (tu TSV publicado)
-const TSV_HOSTS = new Set([
-  "docs.google.com",
-  "docs.googleusercontent.com",
-]);
+// Hosts de TSV (Sheets publicado)
+const TSV_HOSTS = new Set(["docs.google.com", "docs.googleusercontent.com"]);
+
+// Query params típicos de cache-bust que queremos ignorar al cachear assets
+const IGNORED_SEARCH_PARAMS = new Set(["_ts", "ts", "v", "ver", "cachebust"]);
+
+/* =========================
+   Install / Activate
+========================= */
 
 self.addEventListener("install", (event) => {
-  event.waitUntil((async () => {
-    const cache = await caches.open(STATIC_CACHE);
+  event.waitUntil(
+    (async () => {
+      const cache = await caches.open(STATIC_CACHE);
 
-    // cache: "reload" fuerza a ir a red en install para evitar basura vieja
-    await cache.addAll(
-      APP_SHELL.map((url) => new Request(url, { cache: "reload" }))
-    );
+      // Forzamos red en install para evitar que el SW nuevo quede con shell viejo.
+      // Si algo falla, igual dejamos que el SW se instale; la app funciona sin offline.
+      try {
+        await cache.addAll(APP_SHELL.map((u) => new Request(u, { cache: "reload" })));
+      } catch (err) {
+        // Silent: no rompemos instalación por un icon que no exista, etc.
+      }
 
-    // Activa el SW nuevo sin esperar pestañas viejas
-    await self.skipWaiting();
-  })());
+      await self.skipWaiting();
+    })()
+  );
 });
 
 self.addEventListener("activate", (event) => {
-  event.waitUntil((async () => {
-    // Borra caches antiguos
-    const keys = await caches.keys();
-    await Promise.all(
-      keys
-        .filter((k) => !k.startsWith(VERSION))
-        .map((k) => caches.delete(k))
-    );
+  event.waitUntil(
+    (async () => {
+      // Borra caches antiguos
+      const keys = await caches.keys();
+      await Promise.all(keys.filter((k) => !k.startsWith(VERSION)).map((k) => caches.delete(k)));
 
-    await self.clients.claim();
-  })());
+      await self.clients.claim();
+    })()
+  );
 });
+
+/**
+ * Permite que tu app fuerce actualización:
+ * navigator.serviceWorker.controller?.postMessage({ type: "SKIP_WAITING" })
+ */
+self.addEventListener("message", (event) => {
+  const type = event?.data?.type;
+  if (type === "SKIP_WAITING") self.skipWaiting();
+  if (type === "CLIENTS_CLAIM") self.clients.claim();
+});
+
+/* =========================
+   Fetch
+========================= */
 
 self.addEventListener("fetch", (event) => {
   const req = event.request;
 
-  // Solo GET. POST es para tu Apps Script (no lo tocamos).
+  // Solo GET. POST/PUT/etc no se tocan.
   if (req.method !== "GET") return;
 
   const url = new URL(req.url);
 
-  // 1) Navegación (abrir la app / refresh / rutas). Fallback a index.html
-  if (req.mode === "navigate") {
+  // Solo http/https
+  if (url.protocol !== "http:" && url.protocol !== "https:") return;
+
+  // 1) Navegación (HTML): network-first + fallback offline a index cacheado
+  if (isNavigationRequest(req)) {
     event.respondWith(navigationHandler(req));
     return;
   }
 
-  // 2) TSV publicado: Network-First (fallback cache)
+  // 2) TSV publicado: network-first (fallback cache data)
   if (isTSVRequest(url)) {
-    event.respondWith(networkFirst(req, DATA_CACHE));
+    event.respondWith(networkFirst(req, DATA_CACHE, { ignoreSearchOnFallback: true }));
     return;
   }
 
-  // 3) Assets del mismo origen: Stale-While-Revalidate
+  // 3) Same-origin assets: stale-while-revalidate
   if (url.origin === self.location.origin) {
-    event.respondWith(staleWhileRevalidateSameOrigin(req, STATIC_CACHE));
+    event.respondWith(staleWhileRevalidate(req, STATIC_CACHE));
     return;
   }
 
-  // 4) Default: cache-first (por si pides algo externo que sí quieras cachear)
-  event.respondWith(cacheFirst(req, STATIC_CACHE));
+  // 4) Default: network (sin cache) para externos. Menos magia, menos bugs raros.
+  // Si quieres cachear externos, cambia esto por cacheFirst(...).
+  return;
 });
 
 /* =========================
-   Helpers
+   Navigation handler
 ========================= */
 
-function isTSVRequest(url) {
-  if (!TSV_HOSTS.has(url.hostname)) return false;
-
-  // Tu caso típico: ...&output=tsv
-  const out = url.searchParams.get("output");
-  if (out && out.toLowerCase() === "tsv") return true;
-
-  // Fallback: si la ruta o query menciona tsv, lo tratamos como data
-  return url.pathname.toLowerCase().includes("tsv") || url.href.toLowerCase().includes("output=tsv");
-}
-
 async function navigationHandler(request) {
+  const cache = await caches.open(STATIC_CACHE);
+
   try {
-    // Network-first para navegación: así actualiza el index cuando hay red
+    // Importante: pedir HTML explícitamente reduce respuestas raras en algunos hosts
     const net = await fetch(request);
 
-    // Guarda una copia del index.html cuando haya red (para offline)
     if (net && net.ok) {
-      const cache = await caches.open(STATIC_CACHE);
-      cache.put("./index.html", net.clone());
+      // Cachea una copia de index.html para offline (SPA fallback)
+      // Nota: guardamos con key fija para match simple
+      await cache.put("./index.html", net.clone());
     }
 
     return net;
-  } catch {
-    const cache = await caches.open(STATIC_CACHE);
-    return (await cache.match("./index.html")) || new Response("Offline", {
-      status: 503,
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
-    });
+  } catch (err) {
+    const cached = await cache.match("./index.html", { ignoreSearch: true });
+    return (
+      cached ||
+      new Response("Offline", {
+        status: 503,
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+      })
+    );
   }
 }
 
@@ -132,77 +153,126 @@ async function navigationHandler(request) {
 
 async function cacheFirst(request, cacheName) {
   const cache = await caches.open(cacheName);
+  const key = normalizeRequestForCache_(request);
 
-  const cached = await cache.match(request, { ignoreSearch: false });
+  const cached = await cache.match(key, { ignoreSearch: true });
   if (cached) return cached;
 
   const net = await fetch(request);
-  if (shouldCacheResponse(net)) cache.put(request, net.clone());
+  if (await shouldCacheResponse_(net, request)) await cache.put(key, net.clone());
   return net;
 }
 
-/**
- * Stale-While-Revalidate para mismo origen
- * - Ignora cache-bust query (?v=, ?_ts=, etc.) al buscar en cache
- *   para evitar duplicar entradas inútiles.
- */
-async function staleWhileRevalidateSameOrigin(request, cacheName) {
+async function staleWhileRevalidate(request, cacheName) {
   const cache = await caches.open(cacheName);
+  const key = normalizeRequestForCache_(request);
 
-  // Match “normalizado” sin querystring
-  const normalized = stripSearch(request);
+  const cached = await cache.match(key, { ignoreSearch: true });
 
-  const cached = await cache.match(normalized, { ignoreSearch: true });
-
-  const fetchPromise = fetch(request)
-    .then((net) => {
-      if (shouldCacheResponse(net)) cache.put(normalized, net.clone());
+  const updatePromise = (async () => {
+    try {
+      const net = await fetch(request);
+      if (await shouldCacheResponse_(net, request)) await cache.put(key, net.clone());
       return net;
-    })
-    .catch(() => null);
+    } catch (e) {
+      return null;
+    }
+  })();
 
-  return cached || (await fetchPromise) || Response.error();
+  return cached || (await updatePromise) || Response.error();
 }
 
-async function networkFirst(request, cacheName) {
+async function networkFirst(request, cacheName, opts = {}) {
   const cache = await caches.open(cacheName);
+
   try {
     const net = await fetch(request);
-    if (shouldCacheResponse(net)) cache.put(request, net.clone());
+    if (await shouldCacheResponse_(net, request)) await cache.put(request, net.clone());
     return net;
-  } catch {
-    const cached = await cache.match(request, { ignoreSearch: true });
-    return cached || new Response("Offline y sin datos en caché 😶", {
-      status: 503,
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
+  } catch (err) {
+    const cached = await cache.match(request, {
+      ignoreSearch: Boolean(opts.ignoreSearchOnFallback),
     });
+
+    return (
+      cached ||
+      new Response("Offline y sin datos en caché 😶", {
+        status: 503,
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+      })
+    );
   }
 }
 
 /* =========================
-   Response / Request utils
+   Utils
 ========================= */
 
-function shouldCacheResponse(resp) {
-  // Evita cachear errores o respuestas raras
-  if (!resp) return false;
-  if (resp.type === "opaque") return false; // cross-origin sin CORS: mejor no
-  return resp.ok;
+function isNavigationRequest(req) {
+  // req.mode === "navigate" es lo usual,
+  // pero algunos casos (Safari / reload) se benefician con Accept: text/html
+  if (req.mode === "navigate") return true;
+  const accept = req.headers.get("accept") || "";
+  return accept.includes("text/html");
 }
 
-function stripSearch(request) {
+function isTSVRequest(url) {
+  if (!TSV_HOSTS.has(url.hostname)) return false;
+
+  // Caso típico: output=tsv
+  const out = url.searchParams.get("output");
+  if (out && out.toLowerCase() === "tsv") return true;
+
+  // Fallbacks
+  const href = url.href.toLowerCase();
+  if (href.includes("output=tsv")) return true;
+
+  const path = url.pathname.toLowerCase();
+  return path.endsWith(".tsv") || path.includes("tsv");
+}
+
+async function shouldCacheResponse_(resp, request) {
+  if (!resp) return false;
+
+  // Opaque = cross-origin sin CORS: inútil para cosas como TSV y puede inflar cache.
+  if (resp.type === "opaque") return false;
+
+  // Solo OK
+  if (!resp.ok) return false;
+
+  // Evita cachear respuestas "no-store"
+  const cc = (resp.headers.get("cache-control") || "").toLowerCase();
+  if (cc.includes("no-store")) return false;
+
+  // No cacheamos HTML de navegación aquí (lo maneja navigationHandler)
+  const accept = request?.headers?.get?.("accept") || "";
+  if (accept.includes("text/html")) return false;
+
+  return true;
+}
+
+/**
+ * Normaliza requests para evitar duplicar entradas por ?_ts=...
+ * - Solo limpiamos params “cache-bust”, mantenemos los demás.
+ */
+function normalizeRequestForCache_(request) {
   const url = new URL(request.url);
-  url.search = ""; // borra querystring
+
+  for (const k of Array.from(url.searchParams.keys())) {
+    if (IGNORED_SEARCH_PARAMS.has(k.toLowerCase())) url.searchParams.delete(k);
+  }
+  if ([...url.searchParams.keys()].length === 0) url.search = "";
+
+  // Importante: no propagamos headers raros, ni "no-store" obligado.
+  // Para cache key y fetches de assets, esto es suficiente y más estable.
   return new Request(url.toString(), {
     method: "GET",
-    headers: request.headers,
     mode: request.mode,
     credentials: request.credentials,
     redirect: request.redirect,
     referrer: request.referrer,
     referrerPolicy: request.referrerPolicy,
     integrity: request.integrity,
-    cache: "no-store",
+    // Dejamos que el browser decida cache; el SW ya maneja Cache Storage
   });
 }
-  

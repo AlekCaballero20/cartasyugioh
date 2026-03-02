@@ -1,6 +1,6 @@
 {
   "name": "Yu-Gi-Oh! Database",
-  "short_name": "YGO DB",
+  "short_name": "DB Cartas Yu Gi OH",
   "description": "Base de datos Yu-Gi-Oh!: ver, buscar, agregar y editar cartas.",
   "start_url": "./",
   "scope": "./",

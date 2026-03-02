@@ -4,21 +4,22 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
 
-  <title>Yu-Gi-Oh! Database</title>
-  <meta name="description" content="Base de datos Yu-Gi-Oh!: ver, buscar, agregar y editar cartas (TSV + Apps Script)." />
+  <title>Yu-Gi-Oh! TCG · DB</title>
+  <meta name="description" content="Base de datos Yu-Gi-Oh!: ver, buscar, agregar, editar cartas + Decks + Stats + Búsqueda avanzada." />
 
-  <!-- PWA / UI -->
+  <!-- UI -->
   <meta name="theme-color" content="#0b1020" />
   <meta name="color-scheme" content="dark" />
+  <meta name="format-detection" content="telephone=no" />
 
-  <!-- PWA: Manifest (GitHub Pages friendly: relative) -->
+  <!-- PWA -->
   <link rel="manifest" href="./manifest.webmanifest" />
 
   <!-- Icons / Favicon -->
   <link rel="icon" href="./yugioh.webp" />
-  <link rel="apple-touch-icon" href="./yugioh.webp" />
+  <link rel="apple-touch-icon" href="./icons/icon-192.png" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-title" content="DB Cartas Yu Gi OH" />
+  <meta name="apple-mobile-web-app-title" content="YGO TCG DB" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="msapplication-TileColor" content="#0b1020" />
 
@@ -36,8 +37,8 @@
     <div class="brand" aria-label="Marca">
       <img class="brand__icon" src="./yugioh.webp" alt="Yu-Gi-Oh" />
       <div class="brand__text">
-        <div class="brand__title">Base de datos Yu-Gi-Oh!</div>
-        <div class="brand__subtitle">Ver, buscar, agregar y editar cartas (TSV + Apps Script)</div>
+        <div class="brand__title">Yu-Gi-Oh! TCG · Database</div>
+        <div class="brand__subtitle">Cartas + Decks + Stats + Búsqueda avanzada (TSV + Apps Script)</div>
       </div>
     </div>
 
@@ -57,10 +58,36 @@
     </div>
   </header>
 
+  <!-- NAV: Vistas -->
+  <nav class="subnav" aria-label="Vistas">
+    <div class="segmented segmented--views" role="tablist" aria-label="Navegación principal">
+      <button class="segmented__btn is-active" type="button" data-view="cards" role="tab" aria-selected="true">
+        Cartas
+      </button>
+      <button class="segmented__btn" type="button" data-view="decks" role="tab" aria-selected="false">
+        Decks
+      </button>
+      <button class="segmented__btn" type="button" data-view="stats" role="tab" aria-selected="false">
+        Stats
+      </button>
+      <button class="segmented__btn" type="button" data-view="advanced" role="tab" aria-selected="false">
+        Búsqueda avanzada
+      </button>
+    </div>
+
+    <div class="mini mini--right" aria-label="Versión/estado">
+      <span class="mini__label">Vista:</span>
+      <span class="mini__value" id="viewLabel">Cartas</span>
+    </div>
+  </nav>
+
   <!-- MAIN -->
   <main class="layout" role="main">
-    <!-- LEFT: TABLE + FILTERS -->
-    <section class="panel" aria-label="Listado de cartas">
+
+    <!-- =========================
+         VIEW: CARTAS
+    ========================== -->
+    <section class="panel view is-active" id="viewCards" data-view="cards" aria-label="Listado de cartas">
       <div class="panel__head">
         <div class="searchbox" role="search">
           <span class="searchbox__icon" aria-hidden="true">⌕</span>
@@ -113,6 +140,335 @@
       </div>
     </section>
 
+    <!-- =========================
+         VIEW: DECKS
+    ========================== -->
+    <section class="panel view" id="viewDecks" data-view="decks" aria-label="Decks">
+      <div class="panel__head">
+        <div class="panel__titlegroup">
+          <div class="panel__title">Decks</div>
+          <div class="panel__subtitle muted">Crea, organiza y asigna cartas a tus decks.</div>
+        </div>
+
+        <div class="panel__actions" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+          <!-- Opcional: selector (si prefieres dropdown) -->
+          <select id="deckSelect" class="select" aria-label="Seleccionar deck" style="min-width:220px;">
+            <option value="">(sin deck)</option>
+          </select>
+
+          <button class="btn btn--primary" id="btnNewDeck" type="button" title="Crear nuevo deck">
+            + Nuevo deck
+          </button>
+
+          <button class="btn" id="btnExportDeck" type="button" title="Exportar deck" disabled>
+            ⤓ Exportar
+          </button>
+
+          <button class="btn" id="btnImportDeck" type="button" title="Importar deck">
+            ⤒ Importar
+          </button>
+        </div>
+      </div>
+
+      <div class="panel__body">
+        <div class="decksLayout">
+          <!-- Lista de decks -->
+          <div class="decksCol">
+            <div class="boxHead">
+              <div class="boxTitle">Mis decks</div>
+              <div class="boxMeta muted" id="decksCount">0</div>
+            </div>
+
+            <!-- 🔧 OJO: id debe ser "deckList" para tu app.js -->
+            <div class="list" id="deckList" aria-label="Lista de decks">
+              <div class="emptyState muted" id="decksEmpty">
+                No tienes decks todavía. Crea uno y deja de vivir en el caos ✨
+              </div>
+            </div>
+          </div>
+
+          <!-- Detalle del deck -->
+          <div class="decksCol">
+            <div class="boxHead">
+              <div>
+                <div class="boxTitle" id="deckTitle">Selecciona un deck</div>
+                <div class="boxMeta muted" id="deckMeta">Aquí verás sus cartas, conteo y acciones.</div>
+              </div>
+              <div class="boxActions">
+                <button class="btn" id="btnRenameDeck" type="button" disabled>Renombrar</button>
+                <button class="btn" id="btnDeleteDeck" type="button" disabled>Eliminar</button>
+              </div>
+            </div>
+
+            <div class="deckCards" id="deckCards">
+              <div class="emptyState muted" id="deckCardsEmpty">
+                Selecciona un deck para ver sus cartas.
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel__foot">
+        <div class="hint">
+          Tip: desde el editor de carta puedes “Asignar a deck” con cantidad y todo.
+        </div>
+      </div>
+    </section>
+
+    <!-- =========================
+         VIEW: STATS
+    ========================== -->
+    <section class="panel view" id="viewStats" data-view="stats" aria-label="Estadísticas">
+      <div class="panel__head">
+        <div class="panel__titlegroup">
+          <div class="panel__title">Stats</div>
+          <div class="panel__subtitle muted">Resumen de tu colección: valor, rarezas, categorías y más.</div>
+        </div>
+
+        <div class="panel__actions">
+          <button class="btn" id="btnRefreshStats" type="button" title="Recalcular estadísticas">
+            ↻ Recalcular
+          </button>
+        </div>
+      </div>
+
+      <div class="panel__body">
+        <!-- KPIs: ids alineados con app.js -->
+        <div class="statsGrid" aria-label="Panel de estadísticas">
+          <div class="statCard">
+            <div class="muted">Cartas (filas)</div>
+            <div class="statValue" id="statTotalCards">0</div>
+          </div>
+          <div class="statCard">
+            <div class="muted">Únicas</div>
+            <div class="statValue" id="statUniqueCards">0</div>
+          </div>
+          <div class="statCard">
+            <div class="muted">Total copias</div>
+            <div class="statValue" id="statTotalQty">0</div>
+          </div>
+          <div class="statCard">
+            <div class="muted">Valor total</div>
+            <div class="statValue" id="statTotalValue">$0</div>
+          </div>
+          <div class="statCard">
+            <div class="muted">Monstruos</div>
+            <div class="statValue" id="statMonsters">0</div>
+          </div>
+          <div class="statCard">
+            <div class="muted">Magias</div>
+            <div class="statValue" id="statSpells">0</div>
+          </div>
+          <div class="statCard">
+            <div class="muted">Trampas</div>
+            <div class="statValue" id="statTraps">0</div>
+          </div>
+          <div class="statCard">
+            <div class="muted">Sin imagen</div>
+            <div class="statValue" id="statNoImg">0</div>
+          </div>
+        </div>
+
+        <!-- Top lists: ids alineados con app.js -->
+        <div class="statsLists" style="margin-top:16px;">
+          <div class="statBox">
+            <div class="boxHead">
+              <div class="boxTitle">Top Tipos</div>
+              <div class="boxMeta muted">por conteo</div>
+            </div>
+            <div id="statTopTypes" class="statList"></div>
+          </div>
+
+          <div class="statBox">
+            <div class="boxHead">
+              <div class="boxTitle">Top Sets</div>
+              <div class="boxMeta muted">por conteo</div>
+            </div>
+            <div id="statTopSets" class="statList"></div>
+          </div>
+
+          <div class="statBox">
+            <div class="boxHead">
+              <div class="boxTitle">Top Rarezas</div>
+              <div class="boxMeta muted">por conteo</div>
+            </div>
+            <div id="statTopRarities" class="statList"></div>
+          </div>
+
+          <div class="statBox">
+            <div class="boxHead">
+              <div class="boxTitle">Top Atributos</div>
+              <div class="boxMeta muted">por conteo</div>
+            </div>
+            <div id="statTopAttributes" class="statList"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel__foot">
+        <div class="hint">
+          Tip: si el TSV trae precios y cantidades, aquí sale el valor total de la colección.
+        </div>
+      </div>
+    </section>
+
+    <!-- =========================
+         VIEW: ADVANCED SEARCH
+    ========================== -->
+    <section class="panel view" id="viewAdvanced" data-view="advanced" aria-label="Búsqueda avanzada">
+      <div class="panel__head">
+        <div class="panel__titlegroup">
+          <div class="panel__title">Búsqueda avanzada</div>
+          <div class="panel__subtitle muted">Filtra por nivel, ATK/DEF, rareza, idioma, set, año… sin sufrir.</div>
+        </div>
+
+        <div class="panel__actions">
+          <!-- 🔧 IDs alineados con app.js -->
+          <button class="btn" id="btnResetAdvanced" type="button" title="Limpiar filtros avanzados">
+            Limpiar
+          </button>
+          <button class="btn btn--primary" id="btnApplyAdvanced" type="button" title="Aplicar filtros">
+            Aplicar
+          </button>
+        </div>
+      </div>
+
+      <div class="panel__body">
+        <!-- Controles: ids alineados con app.js (si no quieres tantos, igual no rompen) -->
+        <div class="advFilters" aria-label="Controles de búsqueda avanzada">
+          <div class="advGrid">
+            <div class="field">
+              <label for="advQ">Texto</label>
+              <input id="advQ" placeholder="Buscar en cualquier columna…" />
+            </div>
+
+            <div class="field">
+              <label for="advNombre">Nombre</label>
+              <input id="advNombre" placeholder="Ej: Blue-Eyes" />
+            </div>
+
+            <div class="field">
+              <label for="advMazo">Mazo / Set</label>
+              <input id="advMazo" placeholder="Ej: LOB / BLTR" />
+            </div>
+
+            <div class="field">
+              <label for="advCategoria">Categoría</label>
+              <input id="advCategoria" placeholder="Monster / Spell / Trap" />
+            </div>
+
+            <div class="field">
+              <label for="advTipo">Tipo</label>
+              <input id="advTipo" placeholder="Spellcaster / Dragon…" />
+            </div>
+
+            <div class="field">
+              <label for="advSubtipo">Subtipo</label>
+              <input id="advSubtipo" placeholder="Effect / Fusion…" />
+            </div>
+
+            <div class="field">
+              <label for="advAtributo">Atributo</label>
+              <input id="advAtributo" placeholder="Dark / Light…" />
+            </div>
+
+            <div class="field">
+              <label for="advRareza">Rareza</label>
+              <input id="advRareza" placeholder="Secret Rare…" />
+            </div>
+
+            <div class="field">
+              <label for="advIdioma">Idioma</label>
+              <input id="advIdioma" placeholder="EN / ES / JP…" />
+            </div>
+
+            <div class="field">
+              <label for="advEdicion">Edición</label>
+              <input id="advEdicion" placeholder="1st / Unlimited…" />
+            </div>
+
+            <div class="field">
+              <label for="advAnioMin">Año min</label>
+              <input id="advAnioMin" type="number" inputmode="numeric" />
+            </div>
+
+            <div class="field">
+              <label for="advAnioMax">Año max</label>
+              <input id="advAnioMax" type="number" inputmode="numeric" />
+            </div>
+
+            <div class="field">
+              <label for="advLvlMin">Nivel min</label>
+              <input id="advLvlMin" type="number" inputmode="numeric" />
+            </div>
+
+            <div class="field">
+              <label for="advLvlMax">Nivel max</label>
+              <input id="advLvlMax" type="number" inputmode="numeric" />
+            </div>
+
+            <div class="field">
+              <label for="advAtkMin">ATK min</label>
+              <input id="advAtkMin" type="number" inputmode="numeric" />
+            </div>
+
+            <div class="field">
+              <label for="advAtkMax">ATK max</label>
+              <input id="advAtkMax" type="number" inputmode="numeric" />
+            </div>
+
+            <div class="field">
+              <label for="advDefMin">DEF min</label>
+              <input id="advDefMin" type="number" inputmode="numeric" />
+            </div>
+
+            <div class="field">
+              <label for="advDefMax">DEF max</label>
+              <input id="advDefMax" type="number" inputmode="numeric" />
+            </div>
+
+            <div class="field">
+              <label for="advQtyMin">Qty min</label>
+              <input id="advQtyMin" type="number" inputmode="numeric" />
+            </div>
+
+            <div class="field">
+              <label for="advQtyMax">Qty max</label>
+              <input id="advQtyMax" type="number" inputmode="numeric" />
+            </div>
+
+            <div class="field">
+              <label for="advPriceMin">Precio min</label>
+              <input id="advPriceMin" type="number" inputmode="decimal" step="0.01" />
+            </div>
+
+            <div class="field">
+              <label for="advPriceMax">Precio max</label>
+              <input id="advPriceMax" type="number" inputmode="decimal" step="0.01" />
+            </div>
+          </div>
+        </div>
+
+        <div class="advResults">
+          <div class="mini" aria-label="Conteo búsqueda avanzada">
+            <span class="mini__label">Resultados:</span>
+            <span class="mini__value" id="advCountText">0</span>
+          </div>
+
+          <div class="tablewrap" id="advTableWrap">
+            <table class="table" id="advTable" aria-label="Tabla resultados búsqueda avanzada"></table>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel__foot">
+        <div class="hint">
+          Tip: puedes combinar filtros (ej: Monstruos + Nivel ≥ 6 + ATK ≥ 2400 + Rareza = Secret Rare).
+        </div>
+      </div>
+    </section>
+
     <!-- RIGHT: EDITOR DRAWER -->
     <aside class="drawer" id="drawer" aria-hidden="true" aria-label="Editor de carta">
       <div class="drawer__head">
@@ -138,6 +494,16 @@
         <datalist id="dlAtributo"></datalist>
         <datalist id="dlRareza"></datalist>
         <datalist id="dlIdioma"></datalist>
+
+        <!-- Acciones rápidas del drawer -->
+        <div class="drawerQuickActions" aria-label="Acciones rápidas">
+          <button class="btn" id="btnAssignToDeck" type="button" title="Asignar esta carta a un deck" disabled>
+            🃏 Asignar a deck
+          </button>
+          <button class="btn btn--ghost" id="btnDuplicate" type="button" title="Crea una copia como nueva (opcional)">
+            Duplicar
+          </button>
+        </div>
 
         <div class="form__grid">
           <div class="field">
@@ -175,19 +541,10 @@
             <input id="tipo" list="dlTipo" placeholder="Ej: Spellcaster / Dragon…" autocomplete="off" />
           </div>
 
-          <!-- ⭐ NIVEL / ESTRELLAS: SOLO MONSTRUOS (columna en Sheets después de Tipo) -->
+          <!-- ⭐ NIVEL / ESTRELLAS: SOLO MONSTRUOS -->
           <div class="field" data-only="monster" title="Solo aplica para Monstruos">
             <label for="nivel">Nivel ⭐</label>
-            <input
-              id="nivel"
-              type="number"
-              inputmode="numeric"
-              min="1"
-              max="13"
-              step="1"
-              placeholder="Ej: 8"
-              autocomplete="off"
-            />
+            <input id="nivel" type="number" inputmode="numeric" min="1" max="13" step="1" placeholder="Ej: 8" autocomplete="off" />
           </div>
 
           <div class="field">
@@ -249,14 +606,7 @@
 
         <div class="form__actions">
           <button class="btn" id="btnCancel" type="button">Cancelar</button>
-
-          <button class="btn btn--ghost" id="btnDuplicate" type="button" title="Crea una copia como nueva (opcional)">
-            Duplicar
-          </button>
-
-          <button class="btn btn--primary" id="btnSave" type="submit">
-            Guardar
-          </button>
+          <button class="btn btn--primary" id="btnSave" type="submit">Guardar</button>
         </div>
 
         <div class="form__meta" id="formMeta">
@@ -267,10 +617,26 @@
 
     <!-- OVERLAY (para mobile drawer) -->
     <div class="overlay" id="overlay" hidden></div>
+
+    <!-- Modal: 🔧 IDs alineados con app.js (modalClose) -->
+    <div class="modal" id="modal" hidden>
+      <div class="modal__card" role="dialog" aria-modal="true" aria-label="Modal">
+        <div class="modal__head">
+          <div>
+            <div class="modal__title" id="modalTitle">Confirmación</div>
+            <div class="modal__subtitle muted" id="modalSubtitle">—</div>
+          </div>
+          <button class="iconbtn" id="modalClose" type="button" aria-label="Cerrar">✕</button>
+        </div>
+        <div class="modal__body" id="modalBody"></div>
+        <div class="modal__actions" id="modalActions"></div>
+      </div>
+    </div>
+
   </main>
 
-  <!-- App -->
-  <script src="./app.js" defer></script>
+  <!-- App (ES Modules) -->
+  <script type="module" src="./app.js"></script>
 
   <!-- PWA: Service Worker register -->
   <script>
@@ -280,9 +646,8 @@
       window.addEventListener('load', async () => {
         try {
           await navigator.serviceWorker.register('./sw.js', { scope: './' });
-          // Si luego quieres toast de update, aquí se engancha.
         } catch (e) {
-          // Sin drama: la app funciona sin SW.
+          // La app funciona sin SW.
         }
       });
     })();
