@@ -1,5 +1,5 @@
 /* ============================
-   Yu-Gi-Oh DB - Frontend App (vPRO.2)
+   Yu-Gi-Oh DB - Frontend App (vPRO.3)
    - Read: TSV published (cache localStorage)
    - Write: Apps Script WebApp (POST add/update) no-preflight
    - Features:
@@ -8,6 +8,7 @@
      ✅ Monster-only fields: Nivel ⭐ + ATK/DEF
      ✅ Anti-duplicados al guardar (suma cantidad o crea nueva fila)
      ✅ Decks (LocalStorage): crear / agregar / quitar / sumar cantidades
+     ✅ Asignar carta seleccionada a deck desde el drawer
      ✅ Stats panel (si existe HTML)
      ✅ Advanced search (si existe HTML)
      ✅ View switcher (si existe HTML con .view y botones data-view)
@@ -138,6 +139,7 @@
     btnCloseDrawer: $("btnCloseDrawer"),
     btnCancel: $("btnCancel"),
     btnDuplicate: $("btnDuplicate"),
+    btnAssignToDeck: $("btnAssignToDeck"),
     drawerTitle: $("drawerTitle"),
     drawerSubtitle: $("drawerSubtitle"),
     form: $("cardForm"),
@@ -249,6 +251,7 @@
     initViews();
     initDecks();
     initAdvancedSearch();
+    syncAssignToDeckButton();
     loadTSV(false);
   }
 
@@ -306,6 +309,7 @@
     });
 
     dom.btnDuplicate?.addEventListener("click", duplicateSelected);
+    dom.btnAssignToDeck?.addEventListener("click", handleAssignToDeckClick);
     dom.form?.addEventListener("submit", onSave);
 
     document.addEventListener("keydown", (e) => {
@@ -431,6 +435,7 @@
     applyFiltersAndRender();
     renderStats();
     renderDecksUI();
+    syncAssignToDeckButton();
   }
 
   function cacheTSV(tsvText) {
@@ -726,6 +731,7 @@
     clearFormFields();
 
     if (dom.btnDuplicate) dom.btnDuplicate.disabled = true;
+    syncAssignToDeckButton();
 
     if ($("categoria") && !$("categoria").value) $("categoria").value = "Monster";
     updateMonsterOnlyVisibility();
@@ -745,6 +751,7 @@
     updateMonsterOnlyVisibility();
 
     if (dom.btnDuplicate) dom.btnDuplicate.disabled = false;
+    syncAssignToDeckButton();
 
     setFormMeta("Editando.");
     openDrawer();
@@ -763,6 +770,7 @@
     dom.drawer.classList.remove("is-open");
     dom.drawer.setAttribute("aria-hidden", "true");
     if (dom.overlay) dom.overlay.hidden = true;
+    syncAssignToDeckButton();
   }
 
   function clearFormFields() {
@@ -883,6 +891,12 @@
     if (kind === "ok") dom.statusDot?.classList.add("is-ok");
     else if (kind === "loading") dom.statusDot?.classList.add("is-loading");
     else dom.statusDot?.classList.add("is-error");
+  }
+
+  function syncAssignToDeckButton() {
+    if (!dom.btnAssignToDeck) return;
+    const hasSelected = !!state.selected?.rowArray;
+    dom.btnAssignToDeck.disabled = !hasSelected;
   }
 
   /* =========================
@@ -1085,6 +1099,7 @@
 
     state.selected = null;
     if (dom.btnDuplicate) dom.btnDuplicate.disabled = true;
+    syncAssignToDeckButton();
 
     setFormMeta("Duplica y guarda.");
     openDrawer();
@@ -1098,6 +1113,7 @@
     }
     if (dom.btnNew) dom.btnNew.disabled = lock;
     if (dom.btnReload) dom.btnReload.disabled = lock;
+    if (dom.btnAssignToDeck) dom.btnAssignToDeck.disabled = lock || !state.selected?.rowArray;
   }
 
   /* =========================
@@ -1259,6 +1275,28 @@
     saveDecks();
   }
 
+  function addCardToActiveDeck(card, qty = 1){
+    const d = getActiveDeck();
+    if (!d) return false;
+
+    const cardId = String(getCell(card, "_id") || "").trim();
+    if (!cardId) return false;
+
+    const normalizedQty = Math.max(1, toInt(qty, 1));
+    const existing = d.cards.find(c => c.id === cardId);
+
+    if (existing) {
+      existing.qty = Math.max(1, toInt(existing.qty, 1) + normalizedQty);
+    } else {
+      d.cards.push({ id: cardId, qty: normalizedQty });
+    }
+
+    d.updatedAt = Date.now();
+    saveDecks();
+    renderDecksUI();
+    return true;
+  }
+
   function removeCardFromActiveDeck(cardId){
     const d = getActiveDeck();
     if (!d) return;
@@ -1266,6 +1304,71 @@
     d.updatedAt = Date.now();
     saveDecks();
     renderDecksUI();
+  }
+
+  async function handleAssignToDeckClick() {
+    if (!state.selected?.rowArray) {
+      toast("Selecciona una carta primero.");
+      return;
+    }
+
+    if (!state.decks.length) {
+      toast("Crea un deck primero.");
+      return;
+    }
+
+    const card = state.selected.rowArray;
+    const cardName = String(getCell(card, "nombre") || "").trim() || "(sin nombre)";
+
+    if (!state.activeDeckId) setActiveDeckId(state.decks[0].id);
+    const activeDeck = getActiveDeck();
+
+    const choice = await modalChoice({
+      title: "Agregar al deck",
+      subtitle: `"${cardName}" → "${activeDeck?.name || "Deck"}"`,
+      bodyHtml: `
+        <div style="display:flex; flex-direction:column; gap:10px;">
+          <label style="font-size:13px;">Deck destino:</label>
+          <select id="modalDeckSelect" class="select" style="width:100%">
+            ${state.decks.map(d =>
+              `<option value="${escapeHtml(d.id)}" ${d.id === state.activeDeckId ? "selected" : ""}>${escapeHtml(d.name)}</option>`
+            ).join("")}
+          </select>
+
+          <label style="font-size:13px; margin-top:6px;">Cantidad:</label>
+          <input
+            id="modalDeckQty"
+            type="number"
+            min="1"
+            max="99"
+            value="1"
+            class="input"
+            style="width:100px;"
+          />
+        </div>
+      `,
+      buttons: [
+        { id: "confirm", label: "Agregar 🃏", kind: "primary" },
+        { id: "cancel", label: "Cancelar", kind: "ghost" },
+      ],
+    });
+
+    if (!choice || choice === "cancel") return;
+
+    const selectedDeckId = $("modalDeckSelect")?.value || state.activeDeckId;
+    const qty = Math.max(1, toInt($("modalDeckQty")?.value || "1", 1));
+
+    if (selectedDeckId !== state.activeDeckId) {
+      setActiveDeckId(selectedDeckId);
+    }
+
+    const ok = addCardToActiveDeck(card, qty);
+    if (!ok) {
+      toast("No se pudo agregar la carta al deck.");
+      return;
+    }
+
+    toast(`✅ Agregada al deck "${getActiveDeck()?.name || "Deck"}"`);
   }
 
   function renderDecksUI(){
@@ -1367,7 +1470,13 @@
           btn.addEventListener("click", () => {
             const act = btn.dataset.act;
             if (act === "del") return removeCardFromActiveDeck(c.id);
-            if (act === "plus") { c.qty += 1; deck.updatedAt = Date.now(); saveDecks(); renderDecksUI(); return; }
+            if (act === "plus") {
+              c.qty += 1;
+              deck.updatedAt = Date.now();
+              saveDecks();
+              renderDecksUI();
+              return;
+            }
             if (act === "minus") {
               c.qty = Math.max(1, c.qty - 1);
               deck.updatedAt = Date.now();
@@ -1704,7 +1813,6 @@
   }
 
   function btnClassFromKind(kind){
-    // No sabemos tu CSS exacto. Esto intenta encajar con estilos comunes.
     const k = String(kind || "").toLowerCase();
     if (k === "primary") return "btn btn--primary";
     if (k === "danger") return "btn btn--danger";
@@ -1738,11 +1846,9 @@
         resolve(value);
       };
 
-      // Escape cierra
       const onKey = (e) => { if (e.key === "Escape") finish(null); };
       document.addEventListener("keydown", onKey, { once: true });
 
-      // Render botones
       opts.forEach((btn, idx) => {
         const el = document.createElement("button");
         el.type = "button";
@@ -1777,7 +1883,6 @@
         ],
       }).then(resolve);
 
-      // focus al input apenas aparezca
       setTimeout(() => {
         const el = document.getElementById(id);
         if (el) {
@@ -1785,8 +1890,6 @@
           el.select?.();
           el.addEventListener("keydown", (e) => {
             if (e.key === "Enter") {
-              // simula ok: cerramos y resolvemos con valor
-              // (sin reventar si el modal ya cerró)
               const v = el.value;
               closeModal();
               resolve("ok:" + v);
@@ -1797,7 +1900,6 @@
     });
 
     if (!choice) return "";
-    // soporte para enter
     if (String(choice).startsWith("ok:")) return String(choice).slice(3).trim();
 
     if (choice !== "ok") return "";
@@ -1817,8 +1919,6 @@
   }
 
   function toast(msg){
-    // Si tienes un sistema de toast en HTML, se puede conectar.
-    // Mientras tanto, algo decente y no invasivo.
     const m = String(msg || "").trim();
     if (!m) return;
 
@@ -1878,6 +1978,7 @@
     const n = Number(String(v).trim());
     return Number.isFinite(n) && Number.isInteger(n);
   }
+
   function isFiniteNumber(v){
     const n = Number(String(v).trim().replace(",", "."));
     return Number.isFinite(n);
