@@ -1,187 +1,288 @@
-/* ============================
-   stats.js — Yu-Gi-Oh DB Stats (v1.0)
-   - Compute stats from rows (TSV array)
-   - Header-based column detection (robust)
-   - Aggregations: category/type/attr/rarity/lang/set/year/edition
-   - Totals: unique cards, total copies, total value (qty * price)
-   - Render helper (HTML string) optional
-============================ */
+/* =============================================================================
+   stats.js — Yu-Gi-Oh! TCG DB Stats (v1.2.0)
+   - Compute stats from TSV rows or object rows
+   - Header-based column detection
+   - Aggregations: category/type/subtype/attribute/rarity/lang/set/year/edition
+   - Totals: registered rows, unique IDs, total copies, total value
+   - Diagnostics: no image, no price, no qty, incomplete rows
+   - Top cards by copies/value
+   - Optional HTML renderer
+   - ES Module + window.Stats fallback
+============================================================================= */
 
 export const Stats = (() => {
   "use strict";
 
-  // Aliases (independiente del app.js)
+  /* =========================
+     HEADER ALIASES
+  ========================= */
   const HEADER_ALIASES = {
-    _id: ["_id", "id", "uuid"],
-    nombre: ["nombre", "name"],
+    _id: ["_id", "id", "uuid", "cardid", "card id"],
+    num: ["#", "num", "numero", "número", "number"],
+    nombre: ["nombre", "name", "card name", "carta"],
     categoria: ["categoria", "categoría", "category"],
     tipo: ["tipo", "type"],
     subtipo: ["subtipo", "sub type", "subtype"],
     atributo: ["atributo", "attribute"],
+    nivel: ["nivel", "level", "estrellas", "stars"],
+    atk: ["atk", "attack"],
+    def: ["def", "defense"],
     rareza: ["rareza", "rarity"],
     idioma: ["idioma", "language", "lang"],
     mazo: ["mazo", "set", "setcode", "set code", "codigo", "código"],
-    edicion: ["edicion", "edición"],
+    edicion: ["edicion", "edición", "edition"],
     anio: ["anio", "año", "year"],
-    cantidad: ["cantidad", "qty", "quantity"],
-    precio: ["precio", "price", "valor"],
+    cantidad: ["cantidad", "qty", "quantity", "copias", "copies"],
+    precio: ["precio", "price", "valor", "value"],
     fecha_compra: ["fecha_compra", "fecha compra", "fecha", "fecha ingreso", "fecha de ingreso"],
+    notas: ["notas", "notes"],
+    imagenurl: ["imagenurl", "imagen url", "image", "imageurl", "image url", "url imagen", "url"],
   };
 
-  // -------------------------
-  // Public API
-  // -------------------------
+  const CATEGORY_ALIASES = {
+    monster: ["monster", "monstruo", "monstruos"],
+    spell: ["spell", "magia", "magias"],
+    trap: ["trap", "trampa", "trampas"],
+  };
+
+  const DEFAULT_OPTIONS = {
+    currency: "COP",
+    locale: "es-CO",
+    treatMissingQtyAs1: true,
+    topLimit: 10,
+    requiredFields: ["nombre", "categoria", "mazo", "cantidad"],
+  };
+
+  /* =========================
+     PUBLIC: COMPUTE
+  ========================= */
+
   function computeFromTSV(rows, options = {}) {
     const cfg = {
-      useFiltered: true,          // si te pasan rows filtrados, igual sirve
-      treatMissingQtyAs1: true,   // si una carta no tiene cantidad, cuenta como 1
-      currency: "COP",
+      ...DEFAULT_OPTIONS,
       ...options,
     };
 
     const safeRows = Array.isArray(rows) ? rows : [];
-    if (safeRows.length < 1) return emptyStats_();
 
-    const header = safeRows[0] || [];
-    const data = safeRows.slice(1);
+    if (safeRows.length < 1) {
+      return emptyStats(cfg);
+    }
 
-    const col = buildColIndexFromHeader_(header);
+    const header = Array.isArray(safeRows[0]) ? safeRows[0] : [];
+    const data = safeRows.slice(1).filter((row) => Array.isArray(row));
 
-    // Helpers de lectura
-    const get = (row, key) => {
-      const idx = col[key];
-      if (!Number.isInteger(idx) || idx < 0) return "";
-      return String(row?.[idx] ?? "").trim();
+    const columns = buildColumnMap(header);
+
+    return computeFromArrayRows(data, {
+      ...cfg,
+      header,
+      columns,
+    });
+  }
+
+  function computeFromObjects(items, options = {}) {
+    const cfg = {
+      ...DEFAULT_OPTIONS,
+      ...options,
     };
 
-    const qtyOf = (row) => {
-      const raw = get(row, "cantidad");
-      const n = toInt_(raw);
-      if (Number.isFinite(n) && n > 0) return n;
-      return cfg.treatMissingQtyAs1 ? 1 : 0;
+    const rows = Array.isArray(items) ? items : [];
+
+    const header = inferHeaderFromObjects(rows);
+    const columns = buildColumnMap(header);
+
+    const arrayRows = rows.map((item) => {
+      return header.map((key) => String(item?.[key] ?? "").trim());
+    });
+
+    return computeFromArrayRows(arrayRows, {
+      ...cfg,
+      header,
+      columns,
+    });
+  }
+
+  function computeFromArrayRows(dataRows, options = {}) {
+    const cfg = {
+      ...DEFAULT_OPTIONS,
+      ...options,
     };
 
-    const priceOf = (row) => {
-      const raw = get(row, "precio");
-      const n = toNumber_(raw);
-      return Number.isFinite(n) && n >= 0 ? n : 0;
-    };
+    const header = Array.isArray(cfg.header) ? cfg.header : [];
+    const columns = cfg.columns || buildColumnMap(header);
 
-    const normKey = (s) => normalizeKey_(s) || "—";
-    const label = (s) => (String(s ?? "").trim() || "—");
+    const stats = emptyStats(cfg);
 
-    // Aggregators
-    const out = emptyStats_();
-    out.meta = {
-      generatedAt: Date.now(),
-      rows: data.length,
-      hasQty: col.cantidad >= 0,
-      hasPrice: col.precio >= 0,
-      currency: cfg.currency,
-    };
+    stats.meta.generatedAt = Date.now();
+    stats.meta.rows = dataRows.length;
+    stats.meta.currency = cfg.currency;
+    stats.meta.locale = cfg.locale;
+    stats.meta.treatMissingQtyAs1 = Boolean(cfg.treatMissingQtyAs1);
+    stats.meta.hasQty = columns.cantidad >= 0;
+    stats.meta.hasPrice = columns.precio >= 0;
+    stats.meta.hasImage = columns.imagenurl >= 0;
+    stats.meta.requiredFields = [...cfg.requiredFields];
+    stats.columns = { ...columns };
 
-    for (const row of data) {
-      out.totals.uniqueCards += 1;
+    const seenIds = new Set();
+    const seenCanonicalCards = new Set();
 
-      const qty = qtyOf(row);
-      const price = priceOf(row);
+    for (const row of dataRows) {
+      const item = readRow(row, columns);
+
+      const qtyInfo = readQty(item.cantidad, cfg);
+      const priceInfo = readPrice(item.precio);
+
+      const qty = qtyInfo.qty;
+      const price = priceInfo.price;
       const value = qty * price;
 
-      out.totals.totalCopies += qty;
-      out.totals.totalValue += value;
+      const id = clean(item._id);
+      const canonical = makeCanonicalCardKey(item);
 
-      const cat = label(get(row, "categoria"));
-      const type = label(get(row, "tipo"));
-      const attr = label(get(row, "atributo"));
-      const rar = label(get(row, "rareza"));
-      const lang = label(get(row, "idioma"));
-      const setc = label(get(row, "mazo"));
-      const ed = label(get(row, "edicion"));
-      const year = label(get(row, "anio"));
+      stats.totals.registeredRows += 1;
+      stats.totals.totalCopies += qty;
+      stats.totals.totalValue += value;
 
-      bump_(out.byCategory, normKey(cat), { label: cat, copies: qty, unique: 1, value });
-      bump_(out.byType, normKey(type), { label: type, copies: qty, unique: 1, value });
-      bump_(out.byAttribute, normKey(attr), { label: attr, copies: qty, unique: 1, value });
-      bump_(out.byRarity, normKey(rar), { label: rar, copies: qty, unique: 1, value });
-      bump_(out.byLanguage, normKey(lang), { label: lang, copies: qty, unique: 1, value });
-      bump_(out.bySetCode, normKey(setc), { label: setc, copies: qty, unique: 1, value });
-      bump_(out.byEdition, normKey(ed), { label: ed, copies: qty, unique: 1, value });
-      bump_(out.byYear, normKey(year), { label: year, copies: qty, unique: 1, value });
+      if (id) seenIds.add(id);
+      if (canonical) seenCanonicalCards.add(canonical);
 
-      // Top cards by copies/value (usa nombre si existe, si no _id)
-      const name = label(get(row, "nombre")) || label(get(row, "_id"));
-      const cardKey = normKey(name);
+      if (!qtyInfo.hasRawQty) stats.diagnostics.noQty += 1;
+      if (!priceInfo.hasRawPrice) stats.diagnostics.noPrice += 1;
+      if (!clean(item.imagenurl)) stats.diagnostics.noImage += 1;
 
-      bump_(out.byCard, cardKey, {
-        label: name,
-        copies: qty,
-        unique: 1,
+      const categoryLabel = normalizeCategoryLabel(item.categoria);
+      const categoryKey = normalizeKey(categoryLabel);
+
+      if (categoryLabel === "Monster") stats.totals.monsters += 1;
+      else if (categoryLabel === "Spell") stats.totals.spells += 1;
+      else if (categoryLabel === "Trap") stats.totals.traps += 1;
+      else stats.totals.otherCategory += 1;
+
+      const incompleteReasons = getIncompleteReasons(item, cfg.requiredFields);
+
+      if (incompleteReasons.length) {
+        stats.diagnostics.incomplete += 1;
+        stats.diagnostics.incompleteRows.push({
+          id: id || "",
+          nombre: clean(item.nombre) || "Sin nombre",
+          reasons: incompleteReasons,
+        });
+
+        incompleteReasons.forEach((reason) => {
+          bumpSimple(stats.diagnostics.incompleteByReason, reason, 1);
+        });
+      }
+
+      const labels = {
+        category: categoryLabel,
+        type: cleanLabel(item.tipo),
+        subtype: cleanLabel(item.subtipo),
+        attribute: cleanLabel(item.atributo),
+        rarity: cleanLabel(item.rareza),
+        language: cleanLabel(item.idioma),
+        setCode: cleanLabel(item.mazo),
+        edition: cleanLabel(item.edicion),
+        year: cleanLabel(item.anio),
+        level: cleanLabel(item.nivel),
+      };
+
+      bumpGroup(stats.byCategory, categoryKey, labels.category, qty, value);
+      bumpGroup(stats.byType, normalizeKey(labels.type), labels.type, qty, value);
+      bumpGroup(stats.bySubtype, normalizeKey(labels.subtype), labels.subtype, qty, value);
+      bumpGroup(stats.byAttribute, normalizeKey(labels.attribute), labels.attribute, qty, value);
+      bumpGroup(stats.byRarity, normalizeKey(labels.rarity), labels.rarity, qty, value);
+      bumpGroup(stats.byLanguage, normalizeKey(labels.language), labels.language, qty, value);
+      bumpGroup(stats.bySetCode, normalizeKey(labels.setCode), labels.setCode, qty, value);
+      bumpGroup(stats.byEdition, normalizeKey(labels.edition), labels.edition, qty, value);
+      bumpGroup(stats.byYear, normalizeKey(labels.year), labels.year, qty, value);
+      bumpGroup(stats.byLevel, normalizeKey(labels.level), labels.level, qty, value);
+
+      const cardLabel = clean(item.nombre) || id || "Carta sin nombre";
+      const cardKey = canonical || normalizeKey(cardLabel);
+
+      bumpCard(stats.byCard, cardKey, {
+        label: cardLabel,
+        id,
+        setCode: clean(item.mazo),
+        edition: clean(item.edicion),
+        rarity: clean(item.rareza),
+        language: clean(item.idioma),
+        category: labels.category,
+        qty,
         value,
       });
     }
 
-    // Derivados / tops
-    out.tops = {
-      cardsByCopies: topN_(out.byCard, 10, "copies"),
-      cardsByValue: topN_(out.byCard, 10, "value"),
-      setsByCopies: topN_(out.bySetCode, 10, "copies"),
-      rarityByCopies: topN_(out.byRarity, 10, "copies"),
-      typeByCopies: topN_(out.byType, 10, "copies"),
-    };
+    stats.totals.uniqueIds = seenIds.size;
+    stats.totals.uniqueCards = seenCanonicalCards.size || stats.totals.registeredRows;
+    stats.totals.averagePrice = safeDivide(stats.totals.totalValue, stats.totals.totalCopies);
 
-    // Ordena mapas a arrays para UI fácil
-    out.tables = {
-      byCategory: toSortedArray_(out.byCategory),
-      byType: toSortedArray_(out.byType),
-      byAttribute: toSortedArray_(out.byAttribute),
-      byRarity: toSortedArray_(out.byRarity),
-      byLanguage: toSortedArray_(out.byLanguage),
-      bySetCode: toSortedArray_(out.bySetCode),
-      byEdition: toSortedArray_(out.byEdition),
-      byYear: toSortedArray_(out.byYear),
-    };
+    finalizeStats(stats, cfg);
 
-    return out;
+    return stats;
   }
 
+  /* =========================
+     PUBLIC: HTML RENDER
+  ========================= */
+
   function renderStatsHTML(stats, options = {}) {
-    const s = stats || emptyStats_();
+    const s = stats || emptyStats(options);
+
     const cfg = {
       title: "Estadísticas",
-      currency: s?.meta?.currency || "COP",
+      currency: s?.meta?.currency || DEFAULT_OPTIONS.currency,
+      locale: s?.meta?.locale || DEFAULT_OPTIONS.locale,
       showValue: true,
+      topLimit: 10,
       ...options,
     };
 
-    const money = (n) => formatMoney_(n, cfg.currency);
-    const num = (n) => formatInt_(n);
+    const hasValue = cfg.showValue;
 
-    const hasValue = (s?.meta?.hasPrice && s?.meta?.hasQty) && cfg.showValue;
+    const money = (n) => formatMoney(n, cfg.currency, cfg.locale);
+    const num = (n) => formatInt(n, cfg.locale);
 
-    const chipRow = (label, value) => `
-      <div class="statChip">
-        <div class="statChip__label">${escapeHTML_(label)}</div>
-        <div class="statChip__value">${escapeHTML_(value)}</div>
+    const chip = (label, value, sub = "") => `
+      <div class="statCard">
+        <div class="muted">${escapeHTML(label)}</div>
+        <div class="statValue">${escapeHTML(value)}</div>
+        ${sub ? `<div class="statCard__sub">${escapeHTML(sub)}</div>` : ""}
       </div>
     `;
 
-    const lineTop = (arr, mode) => {
-      const rows = (arr || []).slice(0, 10).map((it) => {
-        const v = mode === "value" ? money(it.value) : num(it.copies);
-        return `<li><span>${escapeHTML_(it.label)}</span><b>${escapeHTML_(v)}</b></li>`;
-      }).join("");
-      return `<ul class="statList">${rows || ""}</ul>`;
+    const topList = (arr, field = "copies") => {
+      const rows = (arr || [])
+        .slice(0, cfg.topLimit)
+        .map((item) => {
+          const value = field === "value" ? money(item.value) : num(item.copies);
+
+          return `
+            <div style="display:flex; justify-content:space-between; gap:10px; padding:6px 0; border-bottom:1px solid rgba(148,163,184,.08)">
+              <span style="min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">${escapeHTML(item.label)}</span>
+              <span class="chip">${escapeHTML(value)}</span>
+            </div>
+          `;
+        })
+        .join("");
+
+      return rows || `<div class="muted">Sin datos.</div>`;
     };
 
     const table = (arr) => {
-      const rows = (arr || []).slice(0, 12).map((it) => `
-        <tr>
-          <td>${escapeHTML_(it.label)}</td>
-          <td class="num">${num(it.unique)}</td>
-          <td class="num">${num(it.copies)}</td>
-          ${hasValue ? `<td class="num">${money(it.value)}</td>` : ""}
-        </tr>
-      `).join("");
+      const rows = (arr || [])
+        .slice(0, cfg.topLimit)
+        .map((item) => `
+          <tr>
+            <td>${escapeHTML(item.label)}</td>
+            <td class="num">${escapeHTML(num(item.unique))}</td>
+            <td class="num">${escapeHTML(num(item.copies))}</td>
+            ${hasValue ? `<td class="num">${escapeHTML(money(item.value))}</td>` : ""}
+          </tr>
+        `)
+        .join("");
 
       return `
         <div class="statTableWrap">
@@ -189,48 +290,55 @@ export const Stats = (() => {
             <thead>
               <tr>
                 <th>Grupo</th>
-                <th class="num">Únicas</th>
+                <th class="num">Registros</th>
                 <th class="num">Copias</th>
                 ${hasValue ? `<th class="num">Valor</th>` : ""}
               </tr>
             </thead>
-            <tbody>${rows}</tbody>
+            <tbody>
+              ${rows || `<tr><td colspan="${hasValue ? 4 : 3}">Sin datos.</td></tr>`}
+            </tbody>
           </table>
         </div>
       `;
     };
 
     return `
-      <div class="statsPanel">
+      <section class="statsPanel">
         <div class="statsPanel__head">
           <div>
-            <div class="statsPanel__title">${escapeHTML_(cfg.title)}</div>
-            <div class="statsPanel__sub">${escapeHTML_(`Filas: ${s.meta.rows} · Generado: ${new Date(s.meta.generatedAt).toLocaleString()}`)}</div>
+            <div class="statsPanel__title">${escapeHTML(cfg.title)}</div>
+            <div class="statsPanel__sub">
+              ${escapeHTML(`Filas: ${s.meta.rows} · Generado: ${formatDate(s.meta.generatedAt, cfg.locale)}`)}
+            </div>
           </div>
         </div>
 
         <div class="statsGrid">
-          ${chipRow("Cartas únicas", num(s.totals.uniqueCards))}
-          ${chipRow("Copias totales", num(s.totals.totalCopies))}
-          ${hasValue ? chipRow("Valor total", money(s.totals.totalValue)) : ""}
+          ${chip("Cartas registradas", num(s.totals.registeredRows))}
+          ${chip("Cartas únicas", num(s.totals.uniqueCards))}
+          ${chip("IDs únicos", num(s.totals.uniqueIds))}
+          ${chip("Copias totales", num(s.totals.totalCopies))}
+          ${chip("Valor total", money(s.totals.totalValue))}
+          ${chip("Precio promedio", money(s.totals.averagePrice))}
+          ${chip("Sin imagen", num(s.diagnostics.noImage))}
+          ${chip("Datos incompletos", num(s.diagnostics.incomplete))}
         </div>
 
         <div class="statsColumns">
           <section class="statsBlock">
-            <h3>Top cartas (copias)</h3>
-            ${lineTop(s.tops.cardsByCopies, "copies")}
+            <h3>Top cartas por copias</h3>
+            ${topList(s.tops.cardsByCopies, "copies")}
           </section>
 
-          ${hasValue ? `
-            <section class="statsBlock">
-              <h3>Top cartas (valor)</h3>
-              ${lineTop(s.tops.cardsByValue, "value")}
-            </section>
-          ` : ""}
+          <section class="statsBlock">
+            <h3>Top cartas por valor</h3>
+            ${topList(s.tops.cardsByValue, "value")}
+          </section>
 
           <section class="statsBlock">
-            <h3>Top sets (copias)</h3>
-            ${lineTop(s.tops.setsByCopies, "copies")}
+            <h3>Top sets</h3>
+            ${topList(s.tops.setsByCopies, "copies")}
           </section>
         </div>
 
@@ -239,6 +347,7 @@ export const Stats = (() => {
             <h3>Por categoría</h3>
             ${table(s.tables.byCategory)}
           </section>
+
           <section class="statsBlock">
             <h3>Por rareza</h3>
             ${table(s.tables.byRarity)}
@@ -250,174 +359,576 @@ export const Stats = (() => {
             <h3>Por tipo</h3>
             ${table(s.tables.byType)}
           </section>
+
           <section class="statsBlock">
             <h3>Por atributo</h3>
             ${table(s.tables.byAttribute)}
           </section>
         </div>
-
-        <div class="statsColumns">
-          <section class="statsBlock">
-            <h3>Por idioma</h3>
-            ${table(s.tables.byLanguage)}
-          </section>
-          <section class="statsBlock">
-            <h3>Por año</h3>
-            ${table(s.tables.byYear)}
-          </section>
-        </div>
-
-        <div class="statsColumns">
-          <section class="statsBlock">
-            <h3>Por edición</h3>
-            ${table(s.tables.byEdition)}
-          </section>
-          <section class="statsBlock">
-            <h3>Por set code</h3>
-            ${table(s.tables.bySetCode)}
-          </section>
-        </div>
-      </div>
+      </section>
     `;
   }
 
-  // -------------------------
-  // Helpers
-  // -------------------------
-  function emptyStats_() {
+  /* =========================
+     PUBLIC: SMALL HELPERS
+  ========================= */
+
+  function getTop(stats, tableName, limit = 10) {
+    const arr = stats?.tables?.[tableName] || [];
+    return arr.slice(0, limit);
+  }
+
+  function summarize(stats, options = {}) {
+    const s = stats || emptyStats(options);
+
     return {
-      meta: { generatedAt: Date.now(), rows: 0, hasQty: false, hasPrice: false, currency: "COP" },
-      totals: { uniqueCards: 0, totalCopies: 0, totalValue: 0 },
-      byCategory: {},
-      byType: {},
-      byAttribute: {},
-      byRarity: {},
-      byLanguage: {},
-      bySetCode: {},
-      byEdition: {},
-      byYear: {},
-      byCard: {},
-      tops: {
-        cardsByCopies: [],
-        cardsByValue: [],
-        setsByCopies: [],
-        rarityByCopies: [],
-        typeByCopies: [],
-      },
-      tables: {
-        byCategory: [],
-        byType: [],
-        byAttribute: [],
-        byRarity: [],
-        byLanguage: [],
-        bySetCode: [],
-        byEdition: [],
-        byYear: [],
-      },
+      registeredRows: s.totals.registeredRows,
+      uniqueCards: s.totals.uniqueCards,
+      uniqueIds: s.totals.uniqueIds,
+      totalCopies: s.totals.totalCopies,
+      totalValue: s.totals.totalValue,
+      averagePrice: s.totals.averagePrice,
+      monsters: s.totals.monsters,
+      spells: s.totals.spells,
+      traps: s.totals.traps,
+      noImage: s.diagnostics.noImage,
+      noPrice: s.diagnostics.noPrice,
+      noQty: s.diagnostics.noQty,
+      incomplete: s.diagnostics.incomplete,
     };
   }
 
-  function buildColIndexFromHeader_(header) {
-    const normHeader = (header || []).map((h) => normalizeKey_(h));
+  function buildColumnMap(header) {
+    const normHeader = (header || []).map((h) => normalizeKey(h));
     const out = {};
 
     for (const key of Object.keys(HEADER_ALIASES)) {
-      const aliases = HEADER_ALIASES[key].map((a) => normalizeKey_(a));
+      const aliases = HEADER_ALIASES[key].map((alias) => normalizeKey(alias));
       let idx = -1;
 
-      // exact
-      for (let i = 0; i < normHeader.length; i++) {
-        if (!normHeader[i]) continue;
-        if (aliases.includes(normHeader[i])) { idx = i; break; }
+      for (let i = 0; i < normHeader.length; i += 1) {
+        const h = normHeader[i];
+
+        if (!h) continue;
+
+        if (aliases.includes(h)) {
+          idx = i;
+          break;
+        }
       }
 
-      // contains
       if (idx === -1) {
-        for (let i = 0; i < normHeader.length; i++) {
+        for (let i = 0; i < normHeader.length; i += 1) {
           const h = normHeader[i];
+
           if (!h) continue;
-          if (aliases.some((a) => h.includes(a))) { idx = i; break; }
+
+          if (aliases.some((alias) => h.includes(alias))) {
+            idx = i;
+            break;
+          }
         }
       }
 
       out[key] = idx;
     }
 
-    // fallback: si no hay _id pero hay col 0, úsala
-    if (out._id < 0 && (header?.[0] || "").trim()) out._id = 0;
+    if (out._id < 0 && clean(header?.[0])) {
+      out._id = 0;
+    }
 
     return out;
   }
 
-  function bump_(map, key, patch) {
-    if (!map[key]) {
-      map[key] = { label: patch.label || "—", unique: 0, copies: 0, value: 0 };
-    }
-    map[key].unique += patch.unique || 0;
-    map[key].copies += patch.copies || 0;
-    map[key].value += patch.value || 0;
+  function rowsToObjects(rows) {
+    if (!Array.isArray(rows) || rows.length < 2) return [];
+
+    const header = rows[0].map((h) => clean(h));
+
+    return rows.slice(1).map((row) => {
+      const obj = {};
+
+      header.forEach((key, index) => {
+        if (!key) return;
+        obj[key] = row[index] ?? "";
+      });
+
+      return obj;
+    });
   }
 
-  function toSortedArray_(map) {
+  /* =========================
+     EMPTY / FINALIZE
+  ========================= */
+
+  function emptyStats(options = {}) {
+    const cfg = {
+      ...DEFAULT_OPTIONS,
+      ...options,
+    };
+
+    return {
+      meta: {
+        generatedAt: Date.now(),
+        rows: 0,
+        currency: cfg.currency,
+        locale: cfg.locale,
+        treatMissingQtyAs1: Boolean(cfg.treatMissingQtyAs1),
+        hasQty: false,
+        hasPrice: false,
+        hasImage: false,
+        requiredFields: [...cfg.requiredFields],
+      },
+
+      columns: {},
+
+      totals: {
+        registeredRows: 0,
+        uniqueCards: 0,
+        uniqueIds: 0,
+        totalCopies: 0,
+        totalValue: 0,
+        averagePrice: 0,
+
+        monsters: 0,
+        spells: 0,
+        traps: 0,
+        otherCategory: 0,
+      },
+
+      diagnostics: {
+        noImage: 0,
+        noPrice: 0,
+        noQty: 0,
+        incomplete: 0,
+        incompleteByReason: {},
+        incompleteRows: [],
+      },
+
+      byCategory: {},
+      byType: {},
+      bySubtype: {},
+      byAttribute: {},
+      byRarity: {},
+      byLanguage: {},
+      bySetCode: {},
+      byEdition: {},
+      byYear: {},
+      byLevel: {},
+      byCard: {},
+
+      tops: {
+        cardsByCopies: [],
+        cardsByValue: [],
+        setsByCopies: [],
+        setsByValue: [],
+        rarityByCopies: [],
+        typeByCopies: [],
+        categoryByCopies: [],
+      },
+
+      tables: {
+        byCategory: [],
+        byType: [],
+        bySubtype: [],
+        byAttribute: [],
+        byRarity: [],
+        byLanguage: [],
+        bySetCode: [],
+        byEdition: [],
+        byYear: [],
+        byLevel: [],
+        byCard: [],
+      },
+    };
+  }
+
+  function finalizeStats(stats, cfg) {
+    const topLimit = Number(cfg.topLimit || DEFAULT_OPTIONS.topLimit);
+
+    stats.tables.byCategory = toSortedArray(stats.byCategory);
+    stats.tables.byType = toSortedArray(stats.byType);
+    stats.tables.bySubtype = toSortedArray(stats.bySubtype);
+    stats.tables.byAttribute = toSortedArray(stats.byAttribute);
+    stats.tables.byRarity = toSortedArray(stats.byRarity);
+    stats.tables.byLanguage = toSortedArray(stats.byLanguage);
+    stats.tables.bySetCode = toSortedArray(stats.bySetCode);
+    stats.tables.byEdition = toSortedArray(stats.byEdition);
+    stats.tables.byYear = toSortedArray(stats.byYear);
+    stats.tables.byLevel = toSortedArray(stats.byLevel);
+    stats.tables.byCard = toSortedArray(stats.byCard);
+
+    stats.tops.cardsByCopies = topN(stats.byCard, topLimit, "copies");
+    stats.tops.cardsByValue = topN(stats.byCard, topLimit, "value");
+    stats.tops.setsByCopies = topN(stats.bySetCode, topLimit, "copies");
+    stats.tops.setsByValue = topN(stats.bySetCode, topLimit, "value");
+    stats.tops.rarityByCopies = topN(stats.byRarity, topLimit, "copies");
+    stats.tops.typeByCopies = topN(stats.byType, topLimit, "copies");
+    stats.tops.categoryByCopies = topN(stats.byCategory, topLimit, "copies");
+
+    stats.diagnostics.incompleteRows = stats.diagnostics.incompleteRows.slice(0, 50);
+
+    return stats;
+  }
+
+  /* =========================
+     ROW READERS
+  ========================= */
+
+  function readRow(row, columns) {
+    const get = (key) => {
+      const idx = columns[key];
+
+      if (!Number.isInteger(idx) || idx < 0) return "";
+
+      return clean(row?.[idx]);
+    };
+
+    return {
+      _id: get("_id"),
+      num: get("num"),
+      nombre: get("nombre"),
+      categoria: get("categoria"),
+      tipo: get("tipo"),
+      subtipo: get("subtipo"),
+      atributo: get("atributo"),
+      nivel: get("nivel"),
+      atk: get("atk"),
+      def: get("def"),
+      rareza: get("rareza"),
+      idioma: get("idioma"),
+      mazo: get("mazo"),
+      edicion: get("edicion"),
+      anio: get("anio"),
+      cantidad: get("cantidad"),
+      precio: get("precio"),
+      fecha_compra: get("fecha_compra"),
+      notas: get("notas"),
+      imagenurl: get("imagenurl"),
+    };
+  }
+
+  function readQty(rawQty, cfg) {
+    const hasRawQty = clean(rawQty) !== "";
+    const parsed = parseNumber(rawQty);
+
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return {
+        qty: Math.floor(parsed),
+        hasRawQty,
+      };
+    }
+
+    return {
+      qty: cfg.treatMissingQtyAs1 ? 1 : 0,
+      hasRawQty,
+    };
+  }
+
+  function readPrice(rawPrice) {
+    const hasRawPrice = clean(rawPrice) !== "";
+    const parsed = parseNumber(rawPrice);
+
+    return {
+      price: Number.isFinite(parsed) && parsed >= 0 ? parsed : 0,
+      hasRawPrice,
+    };
+  }
+
+  function getIncompleteReasons(item, requiredFields) {
+    const reasons = [];
+
+    requiredFields.forEach((field) => {
+      if (!clean(item[field])) {
+        reasons.push(`Falta ${field}`);
+      }
+    });
+
+    if (clean(item.imagenurl) && !looksLikeUrl(item.imagenurl)) {
+      reasons.push("ImagenURL inválida");
+    }
+
+    if (clean(item.cantidad) && !Number.isFinite(parseNumber(item.cantidad))) {
+      reasons.push("Cantidad inválida");
+    }
+
+    if (clean(item.precio) && !Number.isFinite(parseNumber(item.precio))) {
+      reasons.push("Precio inválido");
+    }
+
+    return reasons;
+  }
+
+  /* =========================
+     GROUP HELPERS
+  ========================= */
+
+  function bumpGroup(map, key, label, copies, value) {
+    const safeKey = key || "—";
+
+    if (!map[safeKey]) {
+      map[safeKey] = {
+        label: label || "—",
+        unique: 0,
+        copies: 0,
+        value: 0,
+      };
+    }
+
+    map[safeKey].unique += 1;
+    map[safeKey].copies += Number(copies || 0);
+    map[safeKey].value += Number(value || 0);
+  }
+
+  function bumpCard(map, key, patch) {
+    const safeKey = key || "—";
+
+    if (!map[safeKey]) {
+      map[safeKey] = {
+        label: patch.label || "Carta sin nombre",
+        id: patch.id || "",
+        setCode: patch.setCode || "",
+        edition: patch.edition || "",
+        rarity: patch.rarity || "",
+        language: patch.language || "",
+        category: patch.category || "",
+        unique: 0,
+        copies: 0,
+        value: 0,
+      };
+    }
+
+    map[safeKey].unique += 1;
+    map[safeKey].copies += Number(patch.qty || 0);
+    map[safeKey].value += Number(patch.value || 0);
+
+    if (patch.id) map[safeKey].id = patch.id;
+    if (patch.setCode) map[safeKey].setCode = patch.setCode;
+    if (patch.edition) map[safeKey].edition = patch.edition;
+    if (patch.rarity) map[safeKey].rarity = patch.rarity;
+    if (patch.language) map[safeKey].language = patch.language;
+    if (patch.category) map[safeKey].category = patch.category;
+  }
+
+  function bumpSimple(map, key, amount = 1) {
+    const safeKey = key || "—";
+    map[safeKey] = (map[safeKey] || 0) + amount;
+  }
+
+  function toSortedArray(map) {
     return Object.values(map || {})
-      .sort((a, b) => (b.copies || 0) - (a.copies || 0))
-      .map((x) => ({
-        label: x.label,
-        unique: x.unique || 0,
-        copies: x.copies || 0,
-        value: x.value || 0,
+      .sort((a, b) => {
+        const copiesDiff = Number(b.copies || 0) - Number(a.copies || 0);
+        if (copiesDiff !== 0) return copiesDiff;
+
+        const valueDiff = Number(b.value || 0) - Number(a.value || 0);
+        if (valueDiff !== 0) return valueDiff;
+
+        return String(a.label || "").localeCompare(String(b.label || ""), "es", {
+          sensitivity: "base",
+        });
+      })
+      .map((item) => ({
+        label: item.label || "—",
+        id: item.id || "",
+        setCode: item.setCode || "",
+        edition: item.edition || "",
+        rarity: item.rarity || "",
+        language: item.language || "",
+        category: item.category || "",
+        unique: Number(item.unique || 0),
+        copies: Number(item.copies || 0),
+        value: Number(item.value || 0),
       }));
   }
 
-  function topN_(map, n, field) {
+  function topN(map, limit, field) {
     return Object.values(map || {})
       .slice()
-      .sort((a, b) => (b[field] || 0) - (a[field] || 0))
-      .slice(0, n)
-      .map((x) => ({
-        label: x.label,
-        unique: x.unique || 0,
-        copies: x.copies || 0,
-        value: x.value || 0,
+      .sort((a, b) => {
+        const diff = Number(b[field] || 0) - Number(a[field] || 0);
+        if (diff !== 0) return diff;
+
+        return String(a.label || "").localeCompare(String(b.label || ""), "es", {
+          sensitivity: "base",
+        });
+      })
+      .slice(0, limit)
+      .map((item) => ({
+        label: item.label || "—",
+        id: item.id || "",
+        setCode: item.setCode || "",
+        edition: item.edition || "",
+        rarity: item.rarity || "",
+        language: item.language || "",
+        category: item.category || "",
+        unique: Number(item.unique || 0),
+        copies: Number(item.copies || 0),
+        value: Number(item.value || 0),
       }));
   }
 
-  function normalizeKey_(s) {
-    return String(s || "")
-      .trim()
+  /* =========================
+     NORMALIZERS
+  ========================= */
+
+  function normalizeCategoryLabel(value) {
+    const raw = clean(value);
+
+    if (!raw) return "—";
+
+    const key = normalizeKey(raw);
+
+    if (CATEGORY_ALIASES.monster.includes(key)) return "Monster";
+    if (CATEGORY_ALIASES.spell.includes(key)) return "Spell";
+    if (CATEGORY_ALIASES.trap.includes(key)) return "Trap";
+
+    return raw;
+  }
+
+  function cleanLabel(value) {
+    return clean(value) || "—";
+  }
+
+  function makeCanonicalCardKey(item) {
+    const parts = [
+      item.nombre,
+      item.mazo,
+      item.edicion,
+      item.idioma,
+      item.rareza,
+    ].map(normalizeKey);
+
+    const hasName = Boolean(parts[0]);
+
+    if (!hasName) return "";
+
+    return parts.join("|");
+  }
+
+  function inferHeaderFromObjects(items) {
+    const seen = new Set();
+    const header = [];
+
+    (items || []).forEach((item) => {
+      if (!item || typeof item !== "object") return;
+
+      Object.keys(item).forEach((key) => {
+        if (seen.has(key)) return;
+
+        seen.add(key);
+        header.push(key);
+      });
+    });
+
+    return header;
+  }
+
+  function clean(value) {
+    return String(value ?? "").trim();
+  }
+
+  function normalizeKey(value) {
+    return clean(value)
       .toLowerCase()
       .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "");
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/\s+/g, " ");
   }
 
-  function toInt_(v) {
-    const n = Number(String(v || "").replace(",", "."));
-    return Number.isFinite(n) ? Math.floor(n) : NaN;
-  }
+  function parseNumber(value) {
+    const raw = clean(value);
 
-  function toNumber_(v) {
-    const n = Number(String(v || "").replace(",", "."));
+    if (!raw) return NaN;
+
+    let text = raw
+      .replace(/\s/g, "")
+      .replace(/COP/gi, "")
+      .replace(/\$/g, "");
+
+    const hasComma = text.includes(",");
+    const hasDot = text.includes(".");
+
+    if (hasComma && hasDot) {
+      const lastComma = text.lastIndexOf(",");
+      const lastDot = text.lastIndexOf(".");
+
+      if (lastComma > lastDot) {
+        text = text.replace(/\./g, "").replace(",", ".");
+      } else {
+        text = text.replace(/,/g, "");
+      }
+    } else if (hasComma && !hasDot) {
+      text = text.replace(",", ".");
+    }
+
+    text = text.replace(/[^\d.-]/g, "");
+
+    const n = Number(text);
+
     return Number.isFinite(n) ? n : NaN;
   }
 
-  function formatInt_(n) {
-    const x = Number(n);
-    if (!Number.isFinite(x)) return "0";
-    return Math.round(x).toLocaleString("es-CO");
-  }
-
-  function formatMoney_(n, currency) {
-    const x = Number(n);
-    if (!Number.isFinite(x)) return "0";
+  function looksLikeUrl(value) {
     try {
-      return x.toLocaleString("es-CO", { style: "currency", currency: currency || "COP", maximumFractionDigits: 0 });
+      const url = new URL(clean(value));
+      return url.protocol === "http:" || url.protocol === "https:";
     } catch {
-      return `${formatInt_(x)} ${currency || ""}`.trim();
+      return false;
     }
   }
 
-  function escapeHTML_(s) {
-    return String(s ?? "")
+  function safeDivide(a, b) {
+    const x = Number(a || 0);
+    const y = Number(b || 0);
+
+    if (!Number.isFinite(x) || !Number.isFinite(y) || y === 0) return 0;
+
+    return x / y;
+  }
+
+  /* =========================
+     FORMATTERS
+  ========================= */
+
+  function formatInt(value, locale = "es-CO") {
+    const n = Number(value);
+
+    if (!Number.isFinite(n)) return "0";
+
+    return Math.round(n).toLocaleString(locale);
+  }
+
+  function formatMoney(value, currency = "COP", locale = "es-CO") {
+    const n = Number(value);
+
+    if (!Number.isFinite(n)) return "0";
+
+    try {
+      return n.toLocaleString(locale, {
+        style: "currency",
+        currency,
+        maximumFractionDigits: 0,
+      });
+    } catch {
+      return `${formatInt(n, locale)} ${currency || ""}`.trim();
+    }
+  }
+
+  function formatDate(timestamp, locale = "es-CO") {
+    const n = Number(timestamp);
+
+    if (!Number.isFinite(n) || n <= 0) return "—";
+
+    try {
+      return new Date(n).toLocaleString(locale);
+    } catch {
+      return "—";
+    }
+  }
+
+  function escapeHTML(value) {
+    return String(value ?? "")
       .replaceAll("&", "&amp;")
       .replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;")
@@ -425,16 +936,40 @@ export const Stats = (() => {
       .replaceAll("'", "&#039;");
   }
 
-  // -------------------------
-  // Exposed
-  // -------------------------
+  /* =========================
+     PUBLIC API
+  ========================= */
+
   return {
+    HEADER_ALIASES,
+
     computeFromTSV,
+    computeFromObjects,
+    computeFromArrayRows,
+
     renderStatsHTML,
+
+    summarize,
+    getTop,
+
+    buildColumnMap,
+    rowsToObjects,
+
+    normalizeCategoryLabel,
+    parseNumber,
+    formatInt,
+    formatMoney,
+    formatDate,
   };
 })();
 
-// Fallback global si no usan ES Modules
+/* =========================
+   Window fallback
+========================= */
 try {
-  if (typeof window !== "undefined") window.Stats = Stats;
-} catch {}
+  if (typeof window !== "undefined") {
+    window.Stats = Stats;
+  }
+} catch {
+  // Si falla esto, al menos no prendemos fuego al navegador. Todavía.
+}

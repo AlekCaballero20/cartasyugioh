@@ -1,24 +1,33 @@
-/* ============================
-   Yu-Gi-Oh DB - Frontend App (vPRO.3)
-   - Read: TSV published (cache localStorage)
-   - Write: Apps Script WebApp (POST add/update) no-preflight
-   - Features:
-     ✅ Debounce search + fast table render
-     ✅ Header-based column mapping (robusto)
-     ✅ Monster-only fields: Nivel ⭐ + ATK/DEF
-     ✅ Anti-duplicados al guardar (suma cantidad o crea nueva fila)
-     ✅ Decks (LocalStorage): crear / agregar / quitar / sumar cantidades
-     ✅ Asignar carta seleccionada a deck desde el drawer
-     ✅ Stats panel (si existe HTML)
-     ✅ Advanced search (si existe HTML)
-     ✅ View switcher (si existe HTML con .view y botones data-view)
-================================ */
+/* =============================================================================
+   app.js — Yu-Gi-Oh! TCG DB Frontend Controller (vPRO.5 Modular)
+   - Imports:
+     API from api.js
+     Decks from decks.js
+     Stats from stats.js
+     AdvancedSearch from advanced-search.js
+
+   - Responsibilities:
+     ✅ DOM + UI orchestration
+     ✅ Load TSV using API
+     ✅ Cache TSV locally
+     ✅ Render table
+     ✅ Drawer editor
+     ✅ Save row via Apps Script using API
+     ✅ Deck UI using Decks module
+     ✅ Stats UI using Stats module
+     ✅ Advanced search using AdvancedSearch module
+============================================================================= */
+
+import { API } from "./api.js";
+import { Decks } from "./decks.js";
+import { Stats } from "./stats.js";
+import { AdvancedSearch } from "./advanced-search.js";
 
 (() => {
   "use strict";
 
   /* =========================
-    CONFIG
+     CONFIG
   ========================= */
   const TSV_URL =
     "https://docs.google.com/spreadsheets/d/e/2PACX-1vTr_dlYQi8JAzT_PrHeXVPimnOnXYw4VmBmonSSZhbv_k7lKp10csg5YSX2fCGOUWMnLanIbddNjga7/pub?gid=2059687180&single=true&output=tsv";
@@ -27,12 +36,9 @@
     "https://script.google.com/macros/s/AKfycbxHJlNozhJqdz_-2EDf1PbKv24yB96793nPPmu0TfITZJiwrdKwAO6KGhZVIN0KBCKlKA/exec";
 
   const STORAGE = {
-    tsvCache: "ygo_tsv_cache_v4",
-    tsvCacheAt: "ygo_tsv_cache_at_v4",
-
-    // Decks
-    decks: "ygo_decks_v1",
-    lastDeckId: "ygo_last_deck_id_v1",
+    tsvCache: "ygo_tsv_cache_v6",
+    tsvCacheAt: "ygo_tsv_cache_at_v6",
+    lastView: "ygo_last_view_v1",
   };
 
   const NET = {
@@ -41,44 +47,35 @@
     searchDebounceMs: 120,
   };
 
-  /**
-   * Mapeo por header (robusto).
-   * Si cambias el orden de columnas en Sheets, sigue funcionando
-   * mientras existan nombres (o similares).
-   */
-  const HEADER_ALIASES = {
-    _id: ["_id", "id", "uuid"],
-    num: ["#", "num", "numero", "número"],
-    edicion: ["edicion", "edición"],
-    anio: ["anio", "año", "year"],
-    mazo: ["mazo", "set", "setcode", "set code", "codigo", "código"],
-    nombre: ["nombre", "name"],
-    categoria: ["categoria", "categoría", "category"],
-    tipo: ["tipo", "type"],
-    nivel: ["nivel", "level", "estrellas", "stars"],
-    subtipo: ["subtipo", "sub type", "subtype"],
-    atributo: ["atributo", "attribute"],
-    atk: ["atk"],
-    def: ["def"],
-    escalaTipo: ["escalatipo", "escala tipo", "scale type", "scale"],
-    escalaValor: ["escalavalor", "escala valor", "scale value"],
-    rareza: ["rareza", "rarity"],
-    cantidad: ["cantidad", "qty", "quantity"],
-    idioma: ["idioma", "language", "lang"],
-    precio: ["precio", "price", "valor"],
-    fecha_compra: ["fecha_compra", "fecha compra", "fecha", "fecha ingreso", "fecha de ingreso"],
-    notas: ["notas", "notes"],
-    imagenurl: ["imagenurl", "imagen url", "image", "imageurl", "image url", "url imagen", "url"],
+  const VIEW_NAMES = {
+    cards: "cards",
+    decks: "decks",
+    stats: "stats",
+    advanced: "advanced",
   };
 
-  // IDs de inputs del formulario (según tu index.html base)
   const FORM_FIELDS = [
-    "num","anio","nombre","edicion","mazo","categoria","tipo","nivel",
-    "subtipo","atributo","atk","def","rareza","cantidad","idioma","precio",
-    "fecha_compra","notas","imagenurl",
+    "num",
+    "anio",
+    "nombre",
+    "edicion",
+    "mazo",
+    "categoria",
+    "tipo",
+    "nivel",
+    "subtipo",
+    "atributo",
+    "atk",
+    "def",
+    "rareza",
+    "cantidad",
+    "idioma",
+    "precio",
+    "fecha_compra",
+    "notas",
+    "imagenurl",
   ];
 
-  // datalists (ids)
   const DLIST = {
     edicion: "dlEdicion",
     anio: "dlAnio",
@@ -91,36 +88,104 @@
     idioma: "dlIdioma",
   };
 
-  // Defaults “por si la base está vacía”
   const DEFAULTS = {
     edicion: ["1st", "Unlimited", "Limited"],
     categoria: ["Monster", "Spell", "Trap"],
     idioma: ["EN", "ES", "JP", "DE", "FR", "IT", "PT"],
     atributo: ["Light", "Dark", "Fire", "Water", "Earth", "Wind", "Divine"],
     rareza: [
-      "Common","Rare","Super Rare","Ultra Rare","Secret Rare","Ultimate Rare",
-      "Collector's Rare","Ghost Rare","Starlight Rare","Quarter Century Secret Rare",
+      "Common",
+      "Rare",
+      "Super Rare",
+      "Ultra Rare",
+      "Secret Rare",
+      "Ultimate Rare",
+      "Collector's Rare",
+      "Ghost Rare",
+      "Starlight Rare",
+      "Quarter Century Secret Rare",
     ],
     subtipo: [
-      "Normal","Effect","Fusion","Synchro","Xyz","Link","Ritual","Pendulum","Tuner",
-      "Normal Spell","Continuous Spell","Quick-Play Spell","Field Spell","Ritual Spell",
-      "Normal Trap","Continuous Trap","Counter Trap",
+      "Normal",
+      "Effect",
+      "Fusion",
+      "Synchro",
+      "Xyz",
+      "Link",
+      "Ritual",
+      "Pendulum",
+      "Tuner",
+      "Normal Spell",
+      "Continuous Spell",
+      "Quick-Play Spell",
+      "Field Spell",
+      "Ritual Spell",
+      "Equip Spell",
+      "Normal Trap",
+      "Continuous Trap",
+      "Counter Trap",
     ],
   };
 
-  /* =========================
-    DOM helpers
-  ========================= */
-  const $ = (id) => document.getElementById(id);
-  const qs = (sel, root = document) => root.querySelector(sel);
-  const qsa = (sel, root = document) => Array.from(root.querySelectorAll(sel));
-  function safeText(el, txt){ if (el) el.textContent = String(txt ?? ""); }
+  const CATEGORY_META = {
+    monster: {
+      label: "Monster",
+      className: "badge badge--monster",
+      aliases: ["monster", "monstruo", "monstruos"],
+    },
+    spell: {
+      label: "Spell",
+      className: "badge badge--spell",
+      aliases: ["spell", "magia", "magias"],
+    },
+    trap: {
+      label: "Trap",
+      className: "badge badge--trap",
+      aliases: ["trap", "trampa", "trampas"],
+    },
+  };
+
+  const FIELD_KEYS_FOR_TEXT_SEARCH = [
+    "_id",
+    "num",
+    "nombre",
+    "edicion",
+    "mazo",
+    "categoria",
+    "tipo",
+    "nivel",
+    "subtipo",
+    "atributo",
+    "atk",
+    "def",
+    "rareza",
+    "cantidad",
+    "idioma",
+    "precio",
+    "fecha_compra",
+    "notas",
+    "imagenurl",
+  ];
 
   /* =========================
-    DOM refs (tolerante)
+     DOM HELPERS
+  ========================= */
+  const $ = (id) => document.getElementById(id);
+  const qs = (selector, root = document) => root.querySelector(selector);
+  const qsa = (selector, root = document) => Array.from(root.querySelectorAll(selector));
+
+  function safeText(el, value) {
+    if (el) el.textContent = String(value ?? "");
+  }
+
+  function safeHtml(el, html) {
+    if (el) el.innerHTML = String(html ?? "");
+  }
+
+  /* =========================
+     DOM REFS
   ========================= */
   const dom = {
-    // Cards/table
     table: $("dbTable"),
     search: $("search"),
     btnClearSearch: $("btnClearSearch"),
@@ -128,12 +193,9 @@
     btnReload: $("btnReload"),
     btnNew: $("btnNew"),
 
-    // Status
-    statusPill: $("statusPill"),
     statusDot: $("statusDot"),
     statusText: $("statusText"),
 
-    // Drawer
     drawer: $("drawer"),
     overlay: $("overlay"),
     btnCloseDrawer: $("btnCloseDrawer"),
@@ -146,13 +208,23 @@
     rowIndex: $("rowIndex"),
     formMeta: $("formMeta"),
 
-    segmentedBtns: qsa(".segmented__btn"),
+    viewBtns: qsa(
+      ".segmented--views .segmented__btn[data-view], .viewTabs [data-view], button[data-view], [data-role='view-tab'][data-view]"
+    ),
 
-    // Views (si existen)
-    viewBtns: qsa("[data-view]"),
-    views: qsa(".view"),
+    views: qsa(".view[data-view], .view[id^='view'], [data-view-root]"),
 
-    // Advanced search (si existen)
+    filterBtns: qsa(
+      ".segmented__btn[data-filter], button[data-filter], [data-role='category-filter'][data-filter]"
+    ),
+
+    imagePreview: {
+      root: $("cardImagePreview"),
+      img: $("cardImagePreviewImg"),
+      link: $("cardImagePreviewLink"),
+      empty: $("cardImagePreviewEmpty"),
+    },
+
     adv: {
       root: $("viewAdvanced") || qs('[data-view-root="advanced"]'),
       table: $("advTable"),
@@ -184,7 +256,6 @@
       countText: $("advCountText"),
     },
 
-    // Decks (si existen)
     decks: {
       root: $("viewDecks") || qs('[data-view-root="decks"]'),
       list: $("deckList"),
@@ -199,7 +270,6 @@
       select: $("deckSelect"),
     },
 
-    // Stats (si existen)
     stats: {
       root: $("viewStats") || qs('[data-view-root="stats"]'),
       totalCards: $("statTotalCards"),
@@ -210,38 +280,37 @@
       spells: $("statSpells"),
       traps: $("statTraps"),
       noImg: $("statNoImg"),
+      noPrice: $("statNoPrice"),
+      noQty: $("statNoQty"),
+      incomplete: $("statIncomplete"),
       topTypes: $("statTopTypes"),
       topSets: $("statTopSets"),
       topRarities: $("statTopRarities"),
       topAttributes: $("statTopAttributes"),
     },
 
-    // Modal host (si existe; si no, lo creamos)
     modal: $("modal"),
   };
 
   /* =========================
-    STATE
+     STATE
   ========================= */
   const state = {
     header: [],
-    rows: [],      // [header, ...data]
-    viewRows: [],  // [header, ...filtered]
-    filter: "all", // all | monster | spell | trap
+    rows: [],
+    viewRows: [],
+    filter: "all",
     query: "",
     isSaving: false,
-    selected: null, // { sheetRowIndex, rowArray }
+    selected: null,
     isOnline: navigator.onLine,
     lastLoadedAt: null,
+    activeView: VIEW_NAMES.cards,
     col: {},
-
-    // Decks state
-    decks: [],
-    activeDeckId: null,
   };
 
   /* =========================
-    INIT
+     INIT
   ========================= */
   init();
 
@@ -251,8 +320,20 @@
     initViews();
     initDecks();
     initAdvancedSearch();
+    ensureImagePreview();
     syncAssignToDeckButton();
     loadTSV(false);
+  }
+
+  function bindUI() {
+    bindSearch();
+    bindFilterButtons();
+    bindDrawer();
+    bindTableInteractions();
+    bindFormInteractions();
+
+    dom.btnReload?.addEventListener("click", () => loadTSV(true));
+    dom.btnNew?.addEventListener("click", () => openNew());
   }
 
   function bindNetwork() {
@@ -261,6 +342,7 @@
       setStatus("ok", "Online");
       toast("Conexión restaurada ✅");
     });
+
     window.addEventListener("offline", () => {
       state.isOnline = false;
       setStatus("error", "Offline");
@@ -268,14 +350,15 @@
     });
   }
 
-  function bindUI() {
-    // search (debounced)
+  function bindSearch() {
     const onSearch = debounce((value) => {
-      state.query = (value || "").trim();
+      state.query = String(value || "").trim();
       applyFiltersAndRender();
     }, NET.searchDebounceMs);
 
-    dom.search?.addEventListener("input", (e) => onSearch(e.target.value));
+    dom.search?.addEventListener("input", (event) => {
+      onSearch(event.target.value);
+    });
 
     dom.btnClearSearch?.addEventListener("click", () => {
       if (dom.search) dom.search.value = "";
@@ -283,26 +366,29 @@
       applyFiltersAndRender();
       dom.search?.focus();
     });
+  }
 
-    // Segmented (category filter)
-    dom.segmentedBtns.forEach((btn) => {
+  function bindFilterButtons() {
+    dom.filterBtns.forEach((btn) => {
       btn.addEventListener("click", () => {
-        dom.segmentedBtns.forEach((b) => {
-          b.classList.remove("is-active");
-          b.setAttribute("aria-selected", "false");
+        const nextFilter = btn.dataset.filter || "all";
+        state.filter = nextFilter;
+
+        dom.filterBtns.forEach((item) => {
+          const isActive = item.dataset.filter === nextFilter;
+          item.classList.toggle("is-active", isActive);
+          item.setAttribute("aria-selected", isActive ? "true" : "false");
         });
-        btn.classList.add("is-active");
-        btn.setAttribute("aria-selected", "true");
-        state.filter = btn.dataset.filter || "all";
+
         applyFiltersAndRender();
       });
     });
+  }
 
-    dom.btnReload?.addEventListener("click", () => loadTSV(true));
-    dom.btnNew?.addEventListener("click", () => openNew());
-
+  function bindDrawer() {
     dom.btnCloseDrawer?.addEventListener("click", closeDrawer);
     dom.btnCancel?.addEventListener("click", closeDrawer);
+
     dom.overlay?.addEventListener("click", () => {
       if (isModalOpen()) return;
       closeDrawer();
@@ -310,128 +396,226 @@
 
     dom.btnDuplicate?.addEventListener("click", duplicateSelected);
     dom.btnAssignToDeck?.addEventListener("click", handleAssignToDeckClick);
-    dom.form?.addEventListener("submit", onSave);
 
-    document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") {
-        if (isModalOpen()) { closeModal(); return; }
-        closeDrawer();
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+
+      if (isModalOpen()) {
+        closeModal();
+        return;
       }
-    });
 
-    // Click en tabla (delegación)
-    dom.table?.addEventListener("click", (e) => {
-      const tr = e.target?.closest?.("tbody tr");
-      if (!tr) return;
-
-      const id = tr.dataset.id || "";
-      if (!id) return;
-
-      const row = findRowById(id);
-      if (!row) return;
-
-      const sheetRowIndex = resolveSheetRowIndexById(id);
-      openEdit(row, sheetRowIndex);
-    });
-
-    // Categoria: mostrar/ocultar monster-only + tip
-    $("categoria")?.addEventListener("input", () => {
-      updateMonsterOnlyVisibility();
-      const cat = norm($("categoria")?.value);
-      if (cat === "spell" || cat === "trap") {
-        const atr = ($("atributo")?.value || "").trim();
-        if (atr) toast("Tip: Atributo normalmente aplica solo a Monstruos 😉");
-      }
+      closeDrawer();
     });
   }
 
-  /* =========================
-    VIEWS (opcional)
-  ========================= */
-  function initViews(){
-    if (!dom.viewBtns?.length || !dom.views?.length) return;
+  function bindTableInteractions() {
+    dom.table?.addEventListener("click", (event) => {
+      const link = event.target?.closest?.("a");
+      if (link) return;
 
-    dom.viewBtns.forEach(btn => {
+      const tr = event.target?.closest?.("tbody tr[data-id]");
+      if (!tr) return;
+
+      openRowById(tr.dataset.id);
+    });
+
+    dom.table?.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+
+      const tr = event.target?.closest?.("tbody tr[data-id]");
+      if (!tr) return;
+
+      event.preventDefault();
+      openRowById(tr.dataset.id);
+    });
+  }
+
+  function bindFormInteractions() {
+    dom.form?.addEventListener("submit", onSave);
+
+    $("categoria")?.addEventListener("input", () => {
+      updateMonsterOnlyVisibility();
+      updateCategorySuggestions();
+
+      const category = normalize($("categoria")?.value);
+      const attribute = ($("atributo")?.value || "").trim();
+
+      if (["spell", "trap", "magia", "trampa"].includes(category) && attribute) {
+        toast("Tip: Atributo normalmente aplica solo a Monstruos 😉");
+      }
+    });
+
+    $("imagenurl")?.addEventListener(
+      "input",
+      debounce(() => updateImagePreview(val("imagenurl")), 250)
+    );
+  }
+
+  /* =========================
+     VIEWS
+  ========================= */
+  function initViews() {
+    if (!dom.viewBtns.length || !dom.views.length) return;
+
+    dom.viewBtns.forEach((btn) => {
       btn.addEventListener("click", () => {
         const target = btn.dataset.view;
         if (!target) return;
         switchView(target);
-
-        if (target === "stats") renderStats();
-        if (target === "decks") renderDecksUI();
       });
     });
 
-    const active = dom.viewBtns.find(b => b.classList.contains("is-active"))?.dataset.view;
-    if (active) switchView(active);
+    const stored = getStoredView();
+    const activeFromHtml = dom.viewBtns.find((btn) => btn.classList.contains("is-active"))?.dataset.view;
+    const first = dom.viewBtns[0]?.dataset.view || VIEW_NAMES.cards;
+    const initial = stored || activeFromHtml || first;
+
+    switchView(initial, { silent: true });
   }
 
-  function switchView(viewName){
-    dom.viewBtns.forEach(b => {
-      const on = (b.dataset.view === viewName);
-      b.classList.toggle("is-active", on);
-      b.setAttribute("aria-selected", on ? "true" : "false");
+  function switchView(viewName, options = {}) {
+    const { silent = false } = options;
+
+    if (!viewName) return;
+
+    state.activeView = viewName;
+    storeView(viewName);
+
+    dom.viewBtns.forEach((btn) => {
+      const isActive = btn.dataset.view === viewName;
+      btn.classList.toggle("is-active", isActive);
+      btn.setAttribute("aria-selected", isActive ? "true" : "false");
     });
 
-    dom.views.forEach(v => {
-      const name = v.dataset.view || v.id || "";
-      const on = (name === viewName) || (v.id === `view${capitalize(viewName)}`);
-      v.classList.toggle("is-active", on);
-      v.hidden = !on;
+    dom.views.forEach((view) => {
+      const candidates = [
+        view.dataset.view,
+        view.dataset.viewRoot,
+        view.id,
+        normalizeViewId(view.id),
+      ].filter(Boolean);
+
+      const isActive = candidates.includes(viewName);
+
+      view.classList.toggle("is-active", isActive);
+      view.hidden = !isActive;
     });
+
+    if (viewName === VIEW_NAMES.stats) renderStats();
+    if (viewName === VIEW_NAMES.decks) renderDecksUI();
+
+    if (viewName === VIEW_NAMES.advanced && dom.adv.table && !dom.adv.table.innerHTML.trim()) {
+      safeText(dom.adv.countText, "0");
+    }
+
+    if (!silent) {
+      const label = getViewLabel(viewName);
+      if (label) toast(label);
+    }
   }
 
-  function capitalize(s){ return String(s||"").slice(0,1).toUpperCase() + String(s||"").slice(1); }
+  function normalizeViewId(id) {
+    const value = String(id || "").trim();
+
+    if (!value) return "";
+    if (!value.startsWith("view")) return value;
+
+    return value.replace(/^view/, "").toLowerCase();
+  }
+
+  function getViewLabel(viewName) {
+    const labels = {
+      cards: "Vista de cartas",
+      decks: "Vista de decks",
+      stats: "Estadísticas",
+      advanced: "Búsqueda avanzada",
+    };
+
+    return labels[viewName] || "";
+  }
+
+  function getStoredView() {
+    try {
+      return localStorage.getItem(STORAGE.lastView) || "";
+    } catch {
+      return "";
+    }
+  }
+
+  function storeView(viewName) {
+    try {
+      localStorage.setItem(STORAGE.lastView, String(viewName || ""));
+    } catch {}
+  }
 
   /* =========================
-    TSV LOAD + CACHE
+     TSV LOAD + CACHE
   ========================= */
   async function loadTSV(withBypassCache = false) {
     setStatus("loading", "Cargando…");
 
     try {
-      const url = withBypassCache ? cacheBust(TSV_URL) : TSV_URL;
-      const text = await fetchTextWithTimeout(url, NET.fetchTimeoutMs);
-      const rows = tsvToArray(text);
-      if (!rows.length || rows.length < 1) throw new Error("TSV vacío");
+      const text = await API.fetchTSVText(TSV_URL, {
+        timeoutMs: NET.fetchTimeoutMs,
+        bypassCache: withBypassCache,
+      });
+
+      const rows = API.parseTSV(text);
+
+      if (!rows.length) {
+        throw new Error("TSV vacío");
+      }
 
       applyRows(rows);
       cacheTSV(text);
-
       setStatus("ok", "Listo");
+
       return;
-    } catch (err) {
-      console.warn("TSV fetch failed:", err);
+    } catch (error) {
+      console.warn("TSV fetch failed:", error);
     }
 
     const cached = getCachedTSV();
+
     if (cached) {
       try {
-        const rows = tsvToArray(cached);
-        if (!rows.length) throw new Error("Cache TSV inválido");
+        const rows = API.parseTSV(cached);
+
+        if (!rows.length) {
+          throw new Error("Cache TSV inválido");
+        }
+
         applyRows(rows);
-        const at = getCachedTSVAt();
-        setStatus("error", at ? `Offline (cache ${formatTimeAgo(at)})` : "Offline (cache)");
+
+        const cachedAt = getCachedTSVAt();
+        setStatus("error", cachedAt ? `Offline (cache ${formatTimeAgo(cachedAt)})` : "Offline (cache)");
+
         return;
-      } catch (e) {
-        console.warn("Cache parse failed:", e);
+      } catch (error) {
+        console.warn("Cache parse failed:", error);
       }
     }
 
+    state.rows = [];
+    state.header = [];
+    state.viewRows = [];
+    state.col = {};
+
     setStatus("error", "Error");
-    if (dom.table) dom.table.innerHTML = "";
+    renderTable([]);
     safeText(dom.countText, "0");
-    toast("No se pudo cargar (sin red y sin caché).");
+    fillEmptyStats();
+    toast("No se pudo cargar la base de cartas.");
   }
 
   function applyRows(rows) {
-    state.rows = rows;
-    state.header = rows[0] || [];
+    state.rows = Array.isArray(rows) ? rows : [];
+    state.header = state.rows[0] || [];
     state.lastLoadedAt = Date.now();
+    state.col = AdvancedSearch.buildIndex(state.header);
 
-    state.col = buildColIndexFromHeader(state.header);
-    hydrateDatalistsFromRows(rows);
-
+    hydrateDatalistsFromRows(state.rows);
     applyFiltersAndRender();
     renderStats();
     renderDecksUI();
@@ -440,518 +624,537 @@
 
   function cacheTSV(tsvText) {
     try {
-      localStorage.setItem(STORAGE.tsvCache, tsvText);
+      localStorage.setItem(STORAGE.tsvCache, String(tsvText || ""));
       localStorage.setItem(STORAGE.tsvCacheAt, String(Date.now()));
     } catch {}
   }
-  function getCachedTSV() {
-    try { return localStorage.getItem(STORAGE.tsvCache) || ""; } catch { return ""; }
-  }
-  function getCachedTSVAt() {
-    try {
-      const v = localStorage.getItem(STORAGE.tsvCacheAt);
-      return v ? Number(v) : null;
-    } catch { return null; }
-  }
 
-  async function fetchTextWithTimeout(url, timeoutMs) {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  function getCachedTSV() {
     try {
-      const r = await fetch(url, { signal: ctrl.signal, cache: "no-store" });
-      if (!r.ok) throw new Error("TSV no disponible");
-      return await r.text();
-    } finally {
-      clearTimeout(t);
+      return localStorage.getItem(STORAGE.tsvCache) || "";
+    } catch {
+      return "";
     }
   }
 
-  function cacheBust(url) {
-    const u = new URL(url);
-    u.searchParams.set("_ts", String(Date.now()));
-    return u.toString();
-  }
-
-  function tsvToArray(tsv) {
-    const clean = String(tsv || "").replace(/\r/g, "").trim();
-    if (!clean) return [];
-    return clean.split("\n").map((line) => line.split("\t").map((x) => (x ?? "").trim()));
+  function getCachedTSVAt() {
+    try {
+      const value = localStorage.getItem(STORAGE.tsvCacheAt);
+      return value ? Number(value) : null;
+    } catch {
+      return null;
+    }
   }
 
   /* =========================
-    COLUMN INDEX (HEADER-BASED)
+     COLUMN HELPERS
   ========================= */
-  function buildColIndexFromHeader(header) {
-    const normHeader = (header || []).map((h) => norm(h));
-    const out = {};
-
-    for (const key of Object.keys(HEADER_ALIASES)) {
-      const aliases = HEADER_ALIASES[key].map((a) => norm(a));
-      let idx = -1;
-
-      for (let i = 0; i < normHeader.length; i++) {
-        const h = normHeader[i];
-        if (!h) continue;
-        if (aliases.includes(h)) { idx = i; break; }
-      }
-
-      if (idx === -1) {
-        for (let i = 0; i < normHeader.length; i++) {
-          const h = normHeader[i];
-          if (!h) continue;
-          if (aliases.some((a) => h.includes(a))) { idx = i; break; }
-        }
-      }
-
-      if (idx !== -1) out[key] = idx;
-    }
-
-    if (out._id == null && (header?.[0] || "").trim()) out._id = 0;
-    return out;
-  }
-
   function col(key) {
     const idx = state.col?.[key];
     return Number.isInteger(idx) ? idx : -1;
   }
 
-  function getCell(row, k){
-    const i = col(k);
-    return i >= 0 ? (row?.[i] ?? "") : "";
+  function getCell(row, key) {
+    const index = col(key);
+    return index >= 0 ? row?.[index] ?? "" : "";
   }
 
-  function setRowCell(rowArr, k, value){
-    const i = col(k);
-    if (i >= 0 && Array.isArray(rowArr)) rowArr[i] = String(value ?? "").trim();
-  }
+  function setRowCell(rowArray, key, value) {
+    const index = col(key);
 
-  /* =========================
-    DATALISTS
-  ========================= */
-  function hydrateDatalistsFromRows(rows) {
-    const data = (rows || []).slice(1);
-
-    const uniq = (idx) => {
-      if (idx < 0) return [];
-      return uniqueSorted(data.map((r) => (r?.[idx] || "").trim()).filter(Boolean));
-    };
-
-    const values = {
-      edicion: uniq(col("edicion")),
-      anio: uniq(col("anio")),
-      mazo: uniq(col("mazo")),
-      categoria: uniq(col("categoria")),
-      tipo: uniq(col("tipo")),
-      subtipo: uniq(col("subtipo")),
-      atributo: uniq(col("atributo")),
-      rareza: uniq(col("rareza")),
-      idioma: uniq(col("idioma")),
-    };
-
-    for (const k of Object.keys(values)) {
-      const merged = mergeUnique(values[k], DEFAULTS[k] || []);
-      renderDatalist(DLIST[k], merged);
+    if (index >= 0 && Array.isArray(rowArray)) {
+      rowArray[index] = String(value ?? "").trim();
     }
   }
 
+  function findRowById(id) {
+    const safeId = String(id || "").trim();
+    const idIndex = col("_id");
+
+    if (!safeId || idIndex < 0) return null;
+
+    return (state.rows || []).find((row, index) => {
+      return index > 0 && String(row?.[idIndex] || "").trim() === safeId;
+    }) || null;
+  }
+
+  function resolveSheetRowIndexById(id) {
+    const safeId = String(id || "").trim();
+    const idIndex = col("_id");
+
+    if (!safeId || idIndex < 0) return "";
+
+    const index = (state.rows || []).findIndex((row, rowIndex) => {
+      return rowIndex > 0 && String(row?.[idIndex] || "").trim() === safeId;
+    });
+
+    return index >= 1 ? index + 1 : "";
+  }
+
+  function openRowById(id) {
+    const row = findRowById(id);
+
+    if (!row) {
+      toast("No encontré esa carta en la base cargada.");
+      return;
+    }
+
+    const sheetRowIndex = resolveSheetRowIndexById(id);
+    openEdit(row, sheetRowIndex);
+  }
+
+  function rowToCardObject(row) {
+    const obj = {};
+
+    FIELD_KEYS_FOR_TEXT_SEARCH.forEach((key) => {
+      obj[key] = String(getCell(row, key) || "").trim();
+    });
+
+    obj.id = obj._id;
+    obj.cardId = obj._id;
+
+    return obj;
+  }
+
+  /* =========================
+     DATALISTS
+  ========================= */
+  function hydrateDatalistsFromRows(rows) {
+    const facets = AdvancedSearch.quickFacets(rows, {
+      includeCounts: false,
+      includeNumericRanges: false,
+    });
+
+    const values = {
+      edicion: facets.edicion || [],
+      anio: facets.anio || [],
+      mazo: facets.mazo || [],
+      categoria: facets.categoria || [],
+      tipo: facets.tipo || [],
+      subtipo: facets.subtipo || [],
+      atributo: facets.atributo || [],
+      rareza: facets.rareza || [],
+      idioma: facets.idioma || [],
+    };
+
+    Object.keys(values).forEach((key) => {
+      renderDatalist(DLIST[key], mergeUnique(values[key], DEFAULTS[key] || []));
+    });
+  }
+
   function renderDatalist(datalistId, items) {
-    const dl = $(datalistId);
-    if (!dl) return;
-    dl.innerHTML = "";
-    (items || []).forEach((val) => {
-      const opt = document.createElement("option");
-      opt.value = val;
-      dl.appendChild(opt);
+    const datalist = $(datalistId);
+    if (!datalist) return;
+
+    datalist.innerHTML = "";
+
+    (items || []).forEach((item) => {
+      const value = String(item || "").trim();
+
+      if (!value) return;
+
+      const option = document.createElement("option");
+      option.value = value;
+      datalist.appendChild(option);
     });
   }
 
   function mergeUnique(primary, fallback) {
     const seen = new Set();
-    const out = [];
-    [...(primary || []), ...(fallback || [])].forEach((x) => {
-      const v = (x || "").trim();
-      if (!v) return;
-      const key = v.toLowerCase();
-      if (seen.has(key)) return;
-      seen.add(key);
-      out.push(v);
-    });
-    return out;
-  }
+    const output = [];
 
-  function uniqueSorted(arr) {
-    const seen = new Set();
-    const out = [];
-    (arr || []).forEach((x) => {
-      const v = (x || "").trim();
-      if (!v) return;
-      const key = v.toLowerCase();
+    [...(primary || []), ...(fallback || [])].forEach((item) => {
+      const value = String(item || "").trim();
+
+      if (!value) return;
+
+      const key = normalize(value);
+
       if (seen.has(key)) return;
+
       seen.add(key);
-      out.push(v);
+      output.push(value);
     });
-    return out.sort((a, b) =>
-      a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" })
+
+    return output.sort((a, b) =>
+      a.localeCompare(b, "es", {
+        numeric: true,
+        sensitivity: "base",
+      })
     );
   }
 
   /* =========================
-    FILTERS + RENDER (cards)
+     MAIN FILTER + TABLE
   ========================= */
   function applyFiltersAndRender() {
-    const all = state.rows;
-    if (!all || all.length < 2) {
+    if (!state.rows || state.rows.length < 2) {
+      state.viewRows = [state.header || []];
       safeText(dom.countText, "0");
-      renderTable([state.header || [], ...[]]);
+      renderTable(state.viewRows);
       return;
     }
 
-    const header = all[0];
-    const dataRows = all.slice(1);
-    const q = (state.query || "").toLowerCase();
+    const query = buildMainTableQuery();
+    const result = AdvancedSearch.filterRows(state.rows, query, {
+      includeHeaderInResult: true,
+      treatMissingQtyAs1: false,
+    });
 
-    const filtered = dataRows
-      .filter((row) => passesCategoryFilter(row, state.filter))
-      .filter((row) => {
-        if (!q) return true;
-        return row.some((cell) => (cell || "").toLowerCase().includes(q));
-      });
+    state.viewRows = result.resultRows || [state.header, ...(result.rows || [])];
 
-    state.viewRows = [header, ...filtered];
     renderTable(state.viewRows);
-
-    safeText(dom.countText, String(filtered.length));
+    safeText(dom.countText, String(result.total || 0));
   }
 
-  function passesCategoryFilter(row, filter) {
-    if (!filter || filter === "all") return true;
+  function buildMainTableQuery() {
+    const query = {
+      text: state.query || "",
+      textMode: "words",
+      textFields: FIELD_KEYS_FOR_TEXT_SEARCH.filter((key) => col(key) >= 0),
+    };
 
-    const idxCat = col("categoria");
-    const cat = norm(idxCat >= 0 ? (row?.[idxCat] || "") : "");
+    if (state.filter === "monster") query.categoria = "Monster";
+    if (state.filter === "spell") query.categoria = "Spell";
+    if (state.filter === "trap") query.categoria = "Trap";
 
-    const isMonster = cat === "monster" || cat === "monstruo" || cat === "monstruos";
-    const isSpell = cat === "spell" || cat === "magia" || cat === "magias";
-    const isTrap = cat === "trap" || cat === "trampa" || cat === "trampas";
-
-    if (filter === "monster") return isMonster;
-    if (filter === "spell") return isSpell;
-    if (filter === "trap") return isTrap;
-
-    return true;
+    return query;
   }
 
   function renderTable(rows) {
     if (!dom.table) return;
 
-    const header = rows[0] || [];
-    const body = rows.slice(1);
+    const header = rows?.[0] || state.header || [];
+    const body = (rows || []).slice(1);
 
-    const idIdx = col("_id");
-    const nivelIdx = col("nivel");
+    const idIndex = col("_id");
+    const categoryIndex = col("categoria");
+    const levelIndex = col("nivel");
+    const imageIndex = col("imagenurl");
 
     const visibleCols = header
-      .map((_, i) => i)
-      .filter((i) => i !== idIdx);
+      .map((_, index) => index)
+      .filter((index) => index !== idIndex);
 
     const thead = document.createElement("thead");
-    const trh = document.createElement("tr");
-    visibleCols.forEach((i) => {
+    const headerRow = document.createElement("tr");
+
+    visibleCols.forEach((index) => {
       const th = document.createElement("th");
-      th.textContent = header[i] || "";
-      trh.appendChild(th);
+      th.textContent = header[index] || "";
+      headerRow.appendChild(th);
     });
-    thead.appendChild(trh);
+
+    thead.appendChild(headerRow);
 
     const tbody = document.createElement("tbody");
-    const frag = document.createDocumentFragment();
 
-    for (const row of body) {
+    if (!body.length) {
       const tr = document.createElement("tr");
-      tr.tabIndex = 0;
+      const td = document.createElement("td");
 
-      const id = idIdx >= 0 ? (row?.[idIdx] || "") : "";
-      if (id) tr.dataset.id = id;
+      td.colSpan = Math.max(1, visibleCols.length);
+      td.innerHTML = `
+        <div class="emptyState">
+          <strong>No hay resultados.</strong>
+          <div class="muted">Prueba con otra búsqueda o limpia los filtros. Sí, el botón existe por algo.</div>
+        </div>
+      `;
 
-      visibleCols.forEach((i) => {
-        const td = document.createElement("td");
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    } else {
+      const fragment = document.createDocumentFragment();
 
-        if (i === nivelIdx) {
-          const raw = (row?.[i] || "").toString().trim();
-          const n = parseInt(raw, 10);
-          if (Number.isFinite(n) && n > 0) {
-            td.textContent = "⭐".repeat(Math.min(n, 13));
-            td.title = `Nivel: ${n}`;
+      body.forEach((row) => {
+        const tr = document.createElement("tr");
+        tr.tabIndex = 0;
+
+        const id = idIndex >= 0 ? String(row?.[idIndex] || "").trim() : "";
+        if (id) tr.dataset.id = id;
+
+        visibleCols.forEach((index) => {
+          const td = document.createElement("td");
+          const raw = String(row?.[index] || "").trim();
+
+          if (index === categoryIndex) {
+            td.appendChild(createCategoryBadge(raw));
+          } else if (index === levelIndex) {
+            td.textContent = renderLevel(raw);
+            if (raw) td.title = `Nivel: ${raw}`;
+          } else if (index === imageIndex) {
+            renderImageCell(td, raw);
           } else {
             td.textContent = raw;
           }
-        } else {
-          td.textContent = row?.[i] || "";
-        }
 
-        tr.appendChild(td);
+          tr.appendChild(td);
+        });
+
+        fragment.appendChild(tr);
       });
 
-      frag.appendChild(tr);
+      tbody.appendChild(fragment);
     }
-
-    tbody.appendChild(frag);
 
     dom.table.innerHTML = "";
     dom.table.appendChild(thead);
     dom.table.appendChild(tbody);
   }
 
-  function findRowById(_id) {
-    const all = state.rows || [];
-    const idIdx = col("_id");
-    if (idIdx < 0) return null;
+  function createCategoryBadge(value) {
+    const span = document.createElement("span");
+    const key = getCategoryKey(value);
+    const meta = CATEGORY_META[key];
 
-    const idx = all.findIndex((r, i) => i > 0 && (r?.[idIdx] || "") === _id);
-    return idx >= 1 ? all[idx] : null;
+    span.className = meta?.className || "badge";
+    span.textContent = meta?.label || value || "Sin categoría";
+
+    return span;
   }
 
-  function resolveSheetRowIndexById(_id) {
-    const all = state.rows || [];
-    const idIdx = col("_id");
-    if (idIdx < 0) return "";
+  function renderLevel(raw) {
+    const n = parseInt(String(raw || "").trim(), 10);
 
-    const idx = all.findIndex((r, i) => i > 0 && (r?.[idIdx] || "") === _id);
-    return idx >= 1 ? idx + 1 : "";
+    if (Number.isFinite(n) && n > 0) {
+      return "⭐".repeat(Math.min(n, 13));
+    }
+
+    return String(raw || "");
+  }
+
+  function renderImageCell(td, url) {
+    if (!url) {
+      td.textContent = "";
+      return;
+    }
+
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.target = "_blank";
+    anchor.rel = "noreferrer noopener";
+    anchor.textContent = "Ver imagen";
+    anchor.className = "tableLink";
+
+    td.appendChild(anchor);
   }
 
   /* =========================
-    DRAWER / FORM
+     DRAWER / FORM
   ========================= */
   function openNew() {
     state.selected = null;
+
     safeText(dom.drawerTitle, "Nueva carta");
-    safeText(dom.drawerSubtitle, "Completa la info y guarda");
+    safeText(dom.drawerSubtitle, "Completa la información y guarda");
+
     if (dom.rowIndex) dom.rowIndex.value = "";
 
     clearFormFields();
 
-    if (dom.btnDuplicate) dom.btnDuplicate.disabled = true;
-    syncAssignToDeckButton();
+    if ($("categoria") && !$("categoria").value) {
+      $("categoria").value = "Monster";
+    }
 
-    if ($("categoria") && !$("categoria").value) $("categoria").value = "Monster";
+    if (dom.btnDuplicate) {
+      dom.btnDuplicate.disabled = true;
+    }
+
     updateMonsterOnlyVisibility();
+    updateCategorySuggestions();
+    updateImagePreview("");
+    syncAssignToDeckButton();
 
     setFormMeta("Nueva carta.");
     openDrawer();
   }
 
   function openEdit(row, sheetRowIndex) {
-    state.selected = { rowArray: row, sheetRowIndex };
+    state.selected = {
+      rowArray: row,
+      sheetRowIndex,
+    };
 
     safeText(dom.drawerTitle, "Editar carta");
-    safeText(dom.drawerSubtitle, sheetRowIndex ? `Fila #${sheetRowIndex}` : "Editando");
-    if (dom.rowIndex) dom.rowIndex.value = sheetRowIndex || "";
+    safeText(dom.drawerSubtitle, sheetRowIndex ? `Fila #${sheetRowIndex}` : "Editando carta");
+
+    if (dom.rowIndex) {
+      dom.rowIndex.value = sheetRowIndex || "";
+    }
 
     fillFormFromRow(row);
     updateMonsterOnlyVisibility();
+    updateCategorySuggestions();
+    updateImagePreview(getCell(row, "imagenurl"));
 
-    if (dom.btnDuplicate) dom.btnDuplicate.disabled = false;
+    if (dom.btnDuplicate) {
+      dom.btnDuplicate.disabled = false;
+    }
+
     syncAssignToDeckButton();
 
-    setFormMeta("Editando.");
+    setFormMeta("Editando carta.");
     openDrawer();
   }
 
   function openDrawer() {
     if (!dom.drawer) return;
+
     dom.drawer.classList.add("is-open");
     dom.drawer.setAttribute("aria-hidden", "false");
-    if (dom.overlay) dom.overlay.hidden = false;
+
+    if (dom.overlay) {
+      dom.overlay.hidden = false;
+    }
+
     setTimeout(() => $("nombre")?.focus(), 0);
   }
 
   function closeDrawer() {
     if (!dom.drawer) return;
+
     dom.drawer.classList.remove("is-open");
     dom.drawer.setAttribute("aria-hidden", "true");
-    if (dom.overlay) dom.overlay.hidden = true;
+
+    if (dom.overlay) {
+      dom.overlay.hidden = true;
+    }
+
     syncAssignToDeckButton();
   }
 
   function clearFormFields() {
-    FORM_FIELDS.forEach((f) => {
-      const el = $(f);
-      if (el) el.value = "";
+    FORM_FIELDS.forEach((fieldId) => {
+      const input = $(fieldId);
+      if (input) input.value = "";
     });
   }
 
   function fillFormFromRow(row) {
-    setVal("num", getCell(row,"num"));
-    setVal("edicion", getCell(row,"edicion"));
-    setVal("anio", getCell(row,"anio"));
-    setVal("mazo", getCell(row,"mazo"));
-    setVal("nombre", getCell(row,"nombre"));
-    setVal("categoria", getCell(row,"categoria"));
-    setVal("tipo", getCell(row,"tipo"));
-    if ($("nivel")) setVal("nivel", getCell(row,"nivel"));
-
-    setVal("subtipo", getCell(row,"subtipo"));
-    setVal("atributo", getCell(row,"atributo"));
-    setVal("atk", getCell(row,"atk"));
-    setVal("def", getCell(row,"def"));
-    setVal("rareza", getCell(row,"rareza"));
-    setVal("cantidad", getCell(row,"cantidad"));
-    setVal("idioma", getCell(row,"idioma"));
-    setVal("precio", getCell(row,"precio"));
-    setVal("fecha_compra", getCell(row,"fecha_compra"));
-    setVal("notas", getCell(row,"notas"));
-    setVal("imagenurl", getCell(row,"imagenurl"));
+    FORM_FIELDS.forEach((fieldId) => {
+      setVal(fieldId, getCell(row, fieldId));
+    });
   }
 
-  function setVal(id, value){
-    const el = $(id);
-    if (el) el.value = String(value ?? "");
+  function setVal(id, value) {
+    const input = $(id);
+    if (input) input.value = String(value ?? "");
   }
 
-  function buildRowForSave({ forceNewId = false } = {}) {
-    const headerLen = (state.header || []).length || 0;
-    if (!headerLen) throw new Error("No header loaded");
+  function val(id) {
+    return ($(id)?.value || "").trim();
+  }
 
-    const existingId = (() => {
-      const idIdx = col("_id");
-      if (idIdx < 0) return "";
-      return state.selected?.rowArray?.[idIdx] || "";
-    })();
+  function buildRowForSave(options = {}) {
+    const { forceNewId = false } = options;
+    const headerLength = (state.header || []).length;
 
-    const _id = (!forceNewId && existingId) ? existingId : makeId();
-    const row = new Array(headerLen).fill("");
+    if (!headerLength) {
+      throw new Error("No header loaded");
+    }
 
-    const set = (k, value) => setRowCell(row, k, (value ?? "").toString().trim());
+    const existingId = getCell(state.selected?.rowArray, "_id");
+    const rowId = !forceNewId && existingId ? existingId : makeId();
 
-    set("_id", _id);
-    set("num", val("num"));
-    set("edicion", val("edicion"));
-    set("anio", val("anio"));
-    set("mazo", val("mazo"));
-    set("nombre", val("nombre"));
-    set("categoria", normalizeCategoria(val("categoria")));
-    set("tipo", val("tipo"));
+    const row = new Array(headerLength).fill("");
+    const normalizedCategory = normalizeCategoria(val("categoria"));
+    const isMonster = isMonsterCategoria(normalizedCategory);
 
-    const isMonster = isMonsterCategoria(val("categoria"));
-    set("nivel", isMonster ? val("nivel") : "");
-    set("subtipo", val("subtipo"));
-    set("atributo", val("atributo"));
-    set("atk", isMonster ? val("atk") : "");
-    set("def", isMonster ? val("def") : "");
+    setRowCell(row, "_id", rowId);
+    setRowCell(row, "num", val("num"));
+    setRowCell(row, "edicion", val("edicion"));
+    setRowCell(row, "anio", val("anio"));
+    setRowCell(row, "mazo", val("mazo"));
+    setRowCell(row, "nombre", val("nombre"));
+    setRowCell(row, "categoria", normalizedCategory);
+    setRowCell(row, "tipo", val("tipo"));
 
-    set("rareza", val("rareza"));
-    set("cantidad", val("cantidad"));
-    set("idioma", val("idioma"));
-    set("precio", val("precio"));
-    set("fecha_compra", val("fecha_compra"));
-    set("notas", val("notas"));
-    set("imagenurl", val("imagenurl"));
+    setRowCell(row, "nivel", isMonster ? val("nivel") : "");
+    setRowCell(row, "subtipo", val("subtipo"));
+    setRowCell(row, "atributo", isMonster ? val("atributo") : "");
+    setRowCell(row, "atk", isMonster ? val("atk") : "");
+    setRowCell(row, "def", isMonster ? val("def") : "");
+
+    setRowCell(row, "rareza", val("rareza"));
+    setRowCell(row, "cantidad", val("cantidad"));
+    setRowCell(row, "idioma", val("idioma"));
+    setRowCell(row, "precio", val("precio"));
+    setRowCell(row, "fecha_compra", val("fecha_compra"));
+    setRowCell(row, "notas", val("notas"));
+    setRowCell(row, "imagenurl", val("imagenurl"));
 
     return row;
   }
 
-  function val(id) { return ($(id)?.value || "").trim(); }
+  function validateFormBeforeSave() {
+    const category = normalizeCategoria(val("categoria"));
 
-  function isMonsterCategoria(x) {
-    const n = norm(x);
-    return n === "monster" || n === "monstruo" || n === "monstruos";
-  }
+    if (category && !["Monster", "Spell", "Trap"].includes(category)) {
+      toast("Categoría rara. Usa Monster, Spell o Trap.");
+      $("categoria")?.focus();
+      return false;
+    }
 
-  function normalizeCategoria(x) {
-    const n = norm(x);
-    if (!n) return "";
-    if (n === "monster" || n === "monstruo" || n === "monstruos") return "Monster";
-    if (n === "spell" || n === "magia" || n === "magias") return "Spell";
-    if (n === "trap" || n === "trampa" || n === "trampas") return "Trap";
-    return (x || "").trim();
-  }
+    if (isMonsterCategoria(category)) {
+      const level = val("nivel");
+      const atk = val("atk");
+      const def = val("def");
 
-  function updateMonsterOnlyVisibility() {
-    const monster = isMonsterCategoria(val("categoria"));
+      if (level && !isFiniteInteger(level)) {
+        toast("Nivel debe ser un número entero.");
+        $("nivel")?.focus();
+        return false;
+      }
 
-    const nodes = qsa('[data-only="monster"]');
-    nodes.forEach((wrap) => {
-      wrap.style.display = monster ? "" : "none";
+      if (atk && !isFiniteNumber(atk)) {
+        toast("ATK debe ser un número.");
+        $("atk")?.focus();
+        return false;
+      }
 
-      const inputs = qsa("input,select,textarea", wrap);
-      inputs.forEach((el) => {
-        el.disabled = !monster;
-        if (!monster) {
-          if (el.id === "atk" || el.id === "def" || el.id === "nivel") el.value = "";
-        }
-      });
-    });
-  }
-
-  function setFormMeta(msg) { safeText(dom.formMeta, msg); }
-
-  function setStatus(kind, text) {
-    safeText(dom.statusText, text);
-    dom.statusDot?.classList.remove("is-ok", "is-loading", "is-error");
-    if (kind === "ok") dom.statusDot?.classList.add("is-ok");
-    else if (kind === "loading") dom.statusDot?.classList.add("is-loading");
-    else dom.statusDot?.classList.add("is-error");
-  }
-
-  function syncAssignToDeckButton() {
-    if (!dom.btnAssignToDeck) return;
-    const hasSelected = !!state.selected?.rowArray;
-    dom.btnAssignToDeck.disabled = !hasSelected;
-  }
-
-  /* =========================
-    DUPLICATE DETECTION (Cards)
-  ========================= */
-  function canonicalKeyFromRow(row){
-    const name = norm(getCell(row,"nombre"));
-    const setc = norm(getCell(row,"mazo"));
-    const ed = norm(getCell(row,"edicion"));
-    const lang = norm(getCell(row,"idioma"));
-    const rar = norm(getCell(row,"rareza"));
-    return [name, setc, ed, lang, rar].join("|");
-  }
-
-  function canonicalKeyFromForm(){
-    const name = norm(val("nombre"));
-    const setc = norm(val("mazo"));
-    const ed = norm(val("edicion"));
-    const lang = norm(val("idioma"));
-    const rar = norm(val("rareza"));
-    return [name, setc, ed, lang, rar].join("|");
-  }
-
-  function findDuplicateRowForAdd(){
-    const key = canonicalKeyFromForm();
-    if (!key || key.startsWith("|")) return null;
-
-    const data = (state.rows || []).slice(1);
-    if (!data.length) return null;
-
-    const currentId = String(getCell(state.selected?.rowArray, "_id") || "").trim();
-
-    for (const row of data) {
-      const id = String(getCell(row, "_id") || "").trim();
-      if (currentId && id && id === currentId) continue;
-
-      if (canonicalKeyFromRow(row) === key) {
-        return row;
+      if (def && !isFiniteNumber(def)) {
+        toast("DEF debe ser un número.");
+        $("def")?.focus();
+        return false;
       }
     }
-    return null;
+
+    const qty = val("cantidad");
+
+    if (qty && !isFiniteNumber(qty)) {
+      toast("Cantidad debe ser un número.");
+      $("cantidad")?.focus();
+      return false;
+    }
+
+    const price = val("precio");
+
+    if (price && !isFiniteNumber(price)) {
+      toast("Precio debe ser un número.");
+      $("precio")?.focus();
+      return false;
+    }
+
+    const image = val("imagenurl");
+
+    if (image && !looksLikeUrl(image)) {
+      toast("La URL de imagen no parece válida.");
+      $("imagenurl")?.focus();
+      return false;
+    }
+
+    return true;
   }
 
-  /* =========================
-    SAVE (NO PREFLIGHT) + DUPLICADOS
-  ========================= */
-  async function onSave(e) {
-    e.preventDefault();
+  async function onSave(event) {
+    event.preventDefault();
+
     if (state.isSaving) return;
 
-    const rowIndex = (dom.rowIndex?.value || "").trim();
+    const rowIndex = String(dom.rowIndex?.value || "").trim();
     let action = rowIndex ? "update" : "add";
 
-    const name = val("nombre");
-    if (!name) {
+    if (!val("nombre")) {
       toast("Falta el nombre.");
       $("nombre")?.focus();
       return;
@@ -963,82 +1166,47 @@
       return;
     }
 
-    if (isMonsterCategoria(val("categoria"))) {
-      const lvl = val("nivel");
-      const atk = val("atk");
-      const def = val("def");
+    if (!validateFormBeforeSave()) return;
 
-      if (lvl && !isFiniteInteger(lvl)) { toast("Nivel debe ser entero."); $("nivel")?.focus(); return; }
-      if (atk && !isFiniteNumber(atk)) { toast("ATK debe ser número."); $("atk")?.focus(); return; }
-      if (def && !isFiniteNumber(def)) { toast("DEF debe ser número."); $("def")?.focus(); return; }
-    }
-
-    // ADD: chequea duplicados y pregunta
     if (!rowIndex) {
-      const dup = findDuplicateRowForAdd();
-      if (dup) {
-        const dupInfo = describeRow(dup);
-        const qtyIncoming = toInt(val("cantidad"), 0);
-        const qtyExisting = toInt(getCell(dup, "cantidad"), 0);
+      const duplicate = findDuplicateRowForAdd();
 
-        const choice = await modalChoice({
-          title: "Esa carta ya existe 👀",
-          subtitle: "¿Qué hacemos con este duplicado?",
-          bodyHtml: `
-            <div class="emptyState">
-              <div style="font-weight:900; margin-bottom:6px;">Encontrada:</div>
-              <div class="muted" style="line-height:1.4">${escapeHtml(dupInfo)}</div>
-              <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
-                <span class="chip">Cantidad actual: <b>${qtyExisting}</b></span>
-                <span class="chip">Nueva cantidad: <b>${qtyIncoming}</b></span>
-              </div>
-              <div style="margin-top:10px" class="muted">
-                Si eliges “Sumar”, actualizo la fila existente sumando cantidad.
-              </div>
-            </div>
-          `,
-          buttons: [
-            { id: "sum", label: "Sumar cantidad", kind: "primary" },
-            { id: "new", label: "Crear otra fila (duplicado)", kind: "ghost" },
-            { id: "cancel", label: "Cancelar", kind: "ghost" },
-          ],
-        });
+      if (duplicate) {
+        const duplicateDecision = await handleDuplicateBeforeAdd(duplicate);
 
-        if (choice === "cancel" || !choice) {
-          toast("Guardado cancelado.");
-          setFormMeta("Cancelado.");
-          return;
-        }
+        if (!duplicateDecision) return;
 
-        if (choice === "sum") {
-          const dupId = String(getCell(dup, "_id") || "").trim();
-          const dupRowIndex = resolveSheetRowIndexById(dupId);
-
-          const payloadRow = buildRowForSave({ forceNewId: true });
-          setRowCell(payloadRow, "_id", dupId);
-
-          const summed = Math.max(0, qtyExisting + qtyIncoming);
-          setRowCell(payloadRow, "cantidad", String(summed));
-
+        if (duplicateDecision.type === "sum") {
           action = "update";
-          await doSave({ action, rowIndex: String(dupRowIndex || ""), row: payloadRow, closeOnAdd: false });
+
+          await doSave({
+            action,
+            rowIndex: duplicateDecision.rowIndex,
+            row: duplicateDecision.row,
+            closeOnAdd: false,
+          });
+
           return;
         }
-
-        // "new" -> sigue normal add
       }
     }
 
     let payloadRow;
+
     try {
       payloadRow = buildRowForSave();
-    } catch (err) {
-      console.error(err);
-      toast("No se pudo preparar el registro (header no cargado).");
+    } catch (error) {
+      console.error(error);
+      toast("No se pudo preparar el registro. La base aún no cargó el encabezado.");
       return;
     }
 
-    await doSave({ action, rowIndex: rowIndex || "", row: payloadRow, closeOnAdd: true });
+    await doSave({
+      action,
+      rowIndex: rowIndex || "",
+      row: payloadRow,
+      closeOnAdd: true,
+    });
   }
 
   async function doSave({ action, rowIndex, row, closeOnAdd }) {
@@ -1047,44 +1215,35 @@
       lockSave(true);
       setFormMeta("Guardando…");
 
-      const payload = { action, rowIndex: rowIndex || "", row };
-      const text = await postTextWithTimeout(API_URL, JSON.stringify(payload), NET.fetchTimeoutMs);
+      const response = await API.saveRow(
+        API_URL,
+        {
+          action,
+          rowIndex: rowIndex || "",
+          row,
+        },
+        {
+          timeoutMs: NET.fetchTimeoutMs,
+        }
+      );
 
-      let res = null;
-      try { res = JSON.parse(text); } catch {}
+      const msg = response?.data?.msg || response?.data?.message || "Guardado ✅";
 
-      if (!res?.ok) throw new Error(res?.error || "No se pudo guardar");
-
-      toast(res.msg || "Guardado ✅");
+      toast(msg);
       setFormMeta("Listo.");
 
       await loadTSV(true);
 
-      if (action === "add" && closeOnAdd) closeDrawer();
-    } catch (err) {
-      console.error(err);
-      toast("No se pudo guardar (conexión o bloqueo).");
+      if (action === "add" && closeOnAdd) {
+        closeDrawer();
+      }
+    } catch (error) {
+      console.error(error);
+      toast("No se pudo guardar. Revisa conexión o permisos.");
       setFormMeta("No guardó. Reintenta.");
     } finally {
       state.isSaving = false;
       lockSave(false);
-    }
-  }
-
-  async function postTextWithTimeout(url, body, timeoutMs) {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), timeoutMs);
-    try {
-      const resp = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "text/plain;charset=utf-8" }, // evita preflight
-        redirect: "follow",
-        body,
-        signal: ctrl.signal,
-      });
-      return await resp.text();
-    } finally {
-      clearTimeout(t);
     }
   }
 
@@ -1093,216 +1252,369 @@
       toast("No hay nada para duplicar.");
       return;
     }
+
     safeText(dom.drawerTitle, "Duplicar carta");
-    safeText(dom.drawerSubtitle, "Se guardará como nueva");
-    if (dom.rowIndex) dom.rowIndex.value = "";
+    safeText(dom.drawerSubtitle, "Se guardará como una nueva carta");
+
+    if (dom.rowIndex) {
+      dom.rowIndex.value = "";
+    }
 
     state.selected = null;
-    if (dom.btnDuplicate) dom.btnDuplicate.disabled = true;
-    syncAssignToDeckButton();
 
+    if (dom.btnDuplicate) {
+      dom.btnDuplicate.disabled = true;
+    }
+
+    syncAssignToDeckButton();
     setFormMeta("Duplica y guarda.");
     openDrawer();
   }
 
   function lockSave(lock) {
     const btnSave = $("btnSave");
+
     if (btnSave) {
       btnSave.disabled = lock;
       btnSave.textContent = lock ? "Guardando…" : "Guardar";
     }
+
     if (dom.btnNew) dom.btnNew.disabled = lock;
     if (dom.btnReload) dom.btnReload.disabled = lock;
-    if (dom.btnAssignToDeck) dom.btnAssignToDeck.disabled = lock || !state.selected?.rowArray;
+    if (dom.btnAssignToDeck) {
+      dom.btnAssignToDeck.disabled = lock || !state.selected?.rowArray;
+    }
+  }
+
+  function updateMonsterOnlyVisibility() {
+    const isMonster = isMonsterCategoria(val("categoria"));
+    const nodes = qsa('[data-only="monster"]');
+
+    nodes.forEach((wrap) => {
+      wrap.style.display = isMonster ? "" : "none";
+
+      const inputs = qsa("input, select, textarea", wrap);
+
+      inputs.forEach((input) => {
+        input.disabled = !isMonster;
+
+        if (!isMonster && ["atk", "def", "nivel", "atributo"].includes(input.id)) {
+          input.value = "";
+        }
+      });
+    });
+  }
+
+  function updateCategorySuggestions() {
+    const category = getCategoryKey(val("categoria"));
+    const subtype = $("subtipo");
+
+    if (!subtype) return;
+
+    if (category === "spell") {
+      subtype.placeholder = "Ej: Quick-Play Spell, Field Spell...";
+    } else if (category === "trap") {
+      subtype.placeholder = "Ej: Normal Trap, Counter Trap...";
+    } else if (category === "monster") {
+      subtype.placeholder = "Ej: Effect, Fusion, Tuner...";
+    }
+  }
+
+  function setFormMeta(message) {
+    safeText(dom.formMeta, message);
+  }
+
+  function syncAssignToDeckButton() {
+    if (!dom.btnAssignToDeck) return;
+
+    dom.btnAssignToDeck.disabled = !Boolean(state.selected?.rowArray);
   }
 
   /* =========================
-    DECKS (LocalStorage)
+     IMAGE PREVIEW
   ========================= */
-  function initDecks(){
-    state.decks = loadDecks();
-    state.activeDeckId = loadLastDeckId() || (state.decks[0]?.id ?? null);
+  function ensureImagePreview() {
+    if (dom.imagePreview.root) return;
 
+    const imageInput = $("imagenurl");
+    const form = dom.form;
+
+    if (!imageInput || !form) return;
+
+    const wrap = imageInput.closest(".field") || imageInput.parentElement || form;
+
+    const root = document.createElement("div");
+    root.id = "cardImagePreview";
+    root.className = "cardImagePreview";
+    root.innerHTML = `
+      <div class="cardImagePreview__empty" id="cardImagePreviewEmpty">
+        Sin imagen para previsualizar.
+      </div>
+      <img id="cardImagePreviewImg" class="cardImagePreview__img" alt="Preview de carta" hidden />
+      <a id="cardImagePreviewLink" class="cardImagePreview__link" href="#" target="_blank" rel="noreferrer noopener" hidden>
+        Abrir imagen
+      </a>
+    `;
+
+    wrap.insertAdjacentElement("afterend", root);
+
+    dom.imagePreview.root = root;
+    dom.imagePreview.img = $("cardImagePreviewImg");
+    dom.imagePreview.link = $("cardImagePreviewLink");
+    dom.imagePreview.empty = $("cardImagePreviewEmpty");
+  }
+
+  function updateImagePreview(url) {
+    ensureImagePreview();
+
+    const cleanUrl = String(url || "").trim();
+    const root = dom.imagePreview.root;
+    const img = dom.imagePreview.img;
+    const link = dom.imagePreview.link;
+    const empty = dom.imagePreview.empty;
+
+    if (!root || !img || !link || !empty) return;
+
+    if (!cleanUrl || !looksLikeUrl(cleanUrl)) {
+      img.hidden = true;
+      link.hidden = true;
+      empty.hidden = false;
+      empty.textContent = cleanUrl
+        ? "La URL de imagen no parece válida."
+        : "Sin imagen para previsualizar.";
+      img.removeAttribute("src");
+      link.removeAttribute("href");
+      return;
+    }
+
+    empty.hidden = true;
+    img.hidden = false;
+    link.hidden = false;
+
+    img.src = cleanUrl;
+    link.href = cleanUrl;
+
+    img.onerror = () => {
+      img.hidden = true;
+      empty.hidden = false;
+      empty.textContent = "No se pudo cargar la imagen. Ese link está haciendo lo que puede, o sea nada.";
+    };
+
+    img.onload = () => {
+      empty.hidden = true;
+      img.hidden = false;
+    };
+  }
+
+  /* =========================
+     DUPLICATE DETECTION
+  ========================= */
+  function canonicalKeyFromRow(row) {
+    const name = normalize(getCell(row, "nombre"));
+    const setCode = normalize(getCell(row, "mazo"));
+    const edition = normalize(getCell(row, "edicion"));
+    const language = normalize(getCell(row, "idioma"));
+    const rarity = normalize(getCell(row, "rareza"));
+
+    return [name, setCode, edition, language, rarity].join("|");
+  }
+
+  function canonicalKeyFromForm() {
+    const name = normalize(val("nombre"));
+    const setCode = normalize(val("mazo"));
+    const edition = normalize(val("edicion"));
+    const language = normalize(val("idioma"));
+    const rarity = normalize(val("rareza"));
+
+    return [name, setCode, edition, language, rarity].join("|");
+  }
+
+  function findDuplicateRowForAdd() {
+    const key = canonicalKeyFromForm();
+
+    if (!key || key.startsWith("|")) return null;
+
+    const data = (state.rows || []).slice(1);
+    const currentId = String(getCell(state.selected?.rowArray, "_id") || "").trim();
+
+    for (const row of data) {
+      const id = String(getCell(row, "_id") || "").trim();
+
+      if (currentId && id && id === currentId) continue;
+
+      if (canonicalKeyFromRow(row) === key) {
+        return row;
+      }
+    }
+
+    return null;
+  }
+
+  async function handleDuplicateBeforeAdd(duplicateRow) {
+    const duplicateInfo = describeRow(duplicateRow);
+    const incomingQty = Math.max(0, toInt(val("cantidad"), 0));
+    const existingQty = Math.max(0, toInt(getCell(duplicateRow, "cantidad"), 0));
+
+    const choice = await modalChoice({
+      title: "Esa carta ya existe 👀",
+      subtitle: "¿Qué hacemos con este duplicado?",
+      bodyHtml: `
+        <div class="emptyState">
+          <div style="font-weight:900; margin-bottom:6px;">Encontrada:</div>
+          <div class="muted" style="line-height:1.4">${escapeHtml(duplicateInfo)}</div>
+          <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
+            <span class="chip">Cantidad actual: <b>${existingQty}</b></span>
+            <span class="chip">Nueva cantidad: <b>${incomingQty}</b></span>
+          </div>
+          <div style="margin-top:10px" class="muted">
+            Si eliges “Sumar”, actualizo la fila existente sumando cantidad.
+          </div>
+        </div>
+      `,
+      buttons: [
+        { id: "sum", label: "Sumar cantidad", kind: "primary" },
+        { id: "new", label: "Crear otra fila", kind: "ghost" },
+        { id: "cancel", label: "Cancelar", kind: "ghost" },
+      ],
+    });
+
+    if (choice === "cancel" || !choice) {
+      toast("Guardado cancelado.");
+      setFormMeta("Cancelado.");
+      return null;
+    }
+
+    if (choice === "new") {
+      return { type: "new" };
+    }
+
+    if (choice === "sum") {
+      const duplicateId = String(getCell(duplicateRow, "_id") || "").trim();
+      const duplicateRowIndex = resolveSheetRowIndexById(duplicateId);
+      const payloadRow = buildRowForSave({ forceNewId: true });
+
+      setRowCell(payloadRow, "_id", duplicateId);
+      setRowCell(payloadRow, "cantidad", String(existingQty + incomingQty));
+
+      return {
+        type: "sum",
+        rowIndex: String(duplicateRowIndex || ""),
+        row: payloadRow,
+      };
+    }
+
+    return null;
+  }
+
+  /* =========================
+     DECKS — MODULE
+  ========================= */
+  function initDecks() {
     dom.decks.btnNew?.addEventListener("click", async () => {
       const name = await modalPrompt({
         title: "Nuevo deck",
-        subtitle: "Ponle un nombre decente (o no, es tu vida).",
+        subtitle: "Ponle un nombre al deck.",
         placeholder: "Ej: Dark Magician Control",
         okLabel: "Crear",
       });
+
       if (!name) return;
-      createDeck(name);
+
+      Decks.createDeck(name);
       renderDecksUI();
       toast("Deck creado ✅");
     });
 
     dom.decks.btnRename?.addEventListener("click", async () => {
-      const d = getActiveDeck();
-      if (!d) { toast("No hay deck activo."); return; }
+      const deck = Decks.getActiveDeck();
+
+      if (!deck) {
+        toast("No hay deck activo.");
+        return;
+      }
+
       const name = await modalPrompt({
         title: "Renombrar deck",
-        subtitle: "Cambiarle el nombre a las cosas no arregla la vida, pero ayuda.",
+        subtitle: "Cambiarle el nombre no mejora las cartas, pero al menos ordena la tragedia.",
         placeholder: "Nuevo nombre",
-        initialValue: d.name,
+        initialValue: deck.name,
         okLabel: "Guardar",
       });
+
       if (!name) return;
-      d.name = name.trim();
-      saveDecks();
+
+      Decks.renameDeck(deck.id, name);
       renderDecksUI();
       toast("Renombrado ✅");
     });
 
     dom.decks.btnDelete?.addEventListener("click", async () => {
-      const d = getActiveDeck();
-      if (!d) { toast("No hay deck activo."); return; }
+      const deck = Decks.getActiveDeck();
+
+      if (!deck) {
+        toast("No hay deck activo.");
+        return;
+      }
+
       const choice = await modalChoice({
         title: "Eliminar deck",
-        subtitle: `Vas a borrar "${escapeHtml(d.name)}"`,
+        subtitle: `Vas a borrar "${escapeHtml(deck.name)}"`,
         bodyHtml: `<div class="emptyState">Esto no tiene undo. Como muchas decisiones humanas.</div>`,
         buttons: [
-          { id: "del", label: "Eliminar", kind: "primary" },
+          { id: "delete", label: "Eliminar", kind: "primary" },
           { id: "cancel", label: "Cancelar", kind: "ghost" },
         ],
       });
-      if (choice !== "del") return;
-      deleteDeck(d.id);
+
+      if (choice !== "delete") return;
+
+      Decks.deleteDeck(deck.id);
       renderDecksUI();
       toast("Deck eliminado 🗑️");
     });
 
     dom.decks.btnExport?.addEventListener("click", () => {
-      const d = getActiveDeck();
-      if (!d) { toast("No hay deck activo."); return; }
-      const blob = new Blob([JSON.stringify(d, null, 2)], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `deck_${safeFilename(d.name || d.id)}.json`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
+      const deck = Decks.getActiveDeck();
+
+      if (!deck) {
+        toast("No hay deck activo.");
+        return;
+      }
+
+      const json = Decks.exportDeckJSON(deck.id);
+      downloadText(json, `deck_${safeFilename(deck.name || deck.id)}.json`, "application/json");
     });
 
     dom.decks.btnImport?.addEventListener("click", async () => {
       const file = await pickFile(".json,application/json");
+
       if (!file) return;
-      const txt = await file.text();
-      let data;
-      try { data = JSON.parse(txt); } catch { toast("JSON inválido."); return; }
-      if (!data || !data.id || !Array.isArray(data.cards)) { toast("Formato de deck inválido."); return; }
-      upsertDeck(data);
+
+      const text = await file.text();
+      const result = Decks.importDeckJSON(text, {
+        setActive: true,
+        mode: "duplicate",
+      });
+
+      if (!result?.ok) {
+        toast(result?.error || "No se pudo importar el deck.");
+        return;
+      }
+
       renderDecksUI();
       toast("Deck importado ✅");
     });
 
-    dom.decks.select?.addEventListener("change", (e) => {
-      setActiveDeckId(String(e.target.value || ""));
+    dom.decks.select?.addEventListener("change", (event) => {
+      const id = String(event.target.value || "");
+
+      if (id) {
+        Decks.setActiveDeck(id);
+      }
+
       renderDecksUI();
     });
 
-    renderDecksUI();
-  }
-
-  function loadDecks(){
-    try {
-      const raw = localStorage.getItem(STORAGE.decks);
-      const decks = raw ? JSON.parse(raw) : [];
-      return Array.isArray(decks) ? decks : [];
-    } catch { return []; }
-  }
-
-  function saveDecks(){
-    try { localStorage.setItem(STORAGE.decks, JSON.stringify(state.decks || [])); } catch {}
-  }
-
-  function loadLastDeckId(){
-    try { return localStorage.getItem(STORAGE.lastDeckId) || ""; } catch { return ""; }
-  }
-  function saveLastDeckId(id){
-    try { localStorage.setItem(STORAGE.lastDeckId, String(id||"")); } catch {}
-  }
-
-  function setActiveDeckId(id){
-    state.activeDeckId = id || null;
-    saveLastDeckId(state.activeDeckId || "");
-  }
-
-  function getActiveDeck(){
-    const id = state.activeDeckId;
-    return (state.decks || []).find(d => d.id === id) || null;
-  }
-
-  function createDeck(name){
-    const deck = {
-      id: `deck_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,7)}`,
-      name: String(name || "Nuevo deck").trim(),
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      notes: "",
-      cards: [],
-    };
-    state.decks.unshift(deck);
-    setActiveDeckId(deck.id);
-    saveDecks();
-  }
-
-  function deleteDeck(id){
-    state.decks = (state.decks || []).filter(d => d.id !== id);
-    if (state.activeDeckId === id) state.activeDeckId = state.decks[0]?.id ?? null;
-    saveDecks();
-    saveLastDeckId(state.activeDeckId || "");
-  }
-
-  function upsertDeck(deck){
-    const idx = (state.decks || []).findIndex(d => d.id === deck.id);
-    const normalized = {
-      id: String(deck.id),
-      name: String(deck.name || "Deck"),
-      createdAt: Number(deck.createdAt || Date.now()),
-      updatedAt: Date.now(),
-      notes: String(deck.notes || ""),
-      cards: Array.isArray(deck.cards) ? deck.cards.map(c => ({
-        id: String(c.id || ""),
-        qty: Math.max(0, toInt(c.qty, 1)),
-      })).filter(c => c.id) : [],
-    };
-    if (idx >= 0) state.decks[idx] = normalized;
-    else state.decks.unshift(normalized);
-
-    setActiveDeckId(normalized.id);
-    saveDecks();
-  }
-
-  function addCardToActiveDeck(card, qty = 1){
-    const d = getActiveDeck();
-    if (!d) return false;
-
-    const cardId = String(getCell(card, "_id") || "").trim();
-    if (!cardId) return false;
-
-    const normalizedQty = Math.max(1, toInt(qty, 1));
-    const existing = d.cards.find(c => c.id === cardId);
-
-    if (existing) {
-      existing.qty = Math.max(1, toInt(existing.qty, 1) + normalizedQty);
-    } else {
-      d.cards.push({ id: cardId, qty: normalizedQty });
-    }
-
-    d.updatedAt = Date.now();
-    saveDecks();
-    renderDecksUI();
-    return true;
-  }
-
-  function removeCardFromActiveDeck(cardId){
-    const d = getActiveDeck();
-    if (!d) return;
-    d.cards = d.cards.filter(c => c.id !== cardId);
-    d.updatedAt = Date.now();
-    saveDecks();
     renderDecksUI();
   }
 
@@ -1312,27 +1624,48 @@
       return;
     }
 
-    if (!state.decks.length) {
-      toast("Crea un deck primero.");
-      return;
+    let decks = Decks.listDecks();
+
+    if (!decks.length) {
+      const name = await modalPrompt({
+        title: "Primero crea un deck",
+        subtitle: "No puedo meter cartas en la nada. Aunque suena filosófico.",
+        placeholder: "Nombre del deck",
+        okLabel: "Crear deck",
+      });
+
+      if (!name) return;
+
+      Decks.createDeck(name);
+      decks = Decks.listDecks();
     }
 
-    const card = state.selected.rowArray;
-    const cardName = String(getCell(card, "nombre") || "").trim() || "(sin nombre)";
+    let activeDeck = Decks.getActiveDeck();
 
-    if (!state.activeDeckId) setActiveDeckId(state.decks[0].id);
-    const activeDeck = getActiveDeck();
+    if (!activeDeck) {
+      const id = Decks.ensureActiveDeck({
+        createIfMissing: true,
+      });
+
+      activeDeck = Decks.getDeck(id);
+    }
+
+    const card = rowToCardObject(state.selected.rowArray);
+    const cardName = card.nombre || "(sin nombre)";
 
     const choice = await modalChoice({
       title: "Agregar al deck",
-      subtitle: `"${cardName}" → "${activeDeck?.name || "Deck"}"`,
+      subtitle: `"${escapeHtml(cardName)}" → "${escapeHtml(activeDeck?.name || "Deck")}"`,
       bodyHtml: `
         <div style="display:flex; flex-direction:column; gap:10px;">
           <label style="font-size:13px;">Deck destino:</label>
           <select id="modalDeckSelect" class="select" style="width:100%">
-            ${state.decks.map(d =>
-              `<option value="${escapeHtml(d.id)}" ${d.id === state.activeDeckId ? "selected" : ""}>${escapeHtml(d.name)}</option>`
-            ).join("")}
+            ${decks
+              .map((deck) => {
+                const selected = deck.id === activeDeck?.id ? "selected" : "";
+                return `<option value="${escapeHtml(deck.id)}" ${selected}>${escapeHtml(deck.name)}</option>`;
+              })
+              .join("")}
           </select>
 
           <label style="font-size:13px; margin-top:6px;">Cantidad:</label>
@@ -1355,426 +1688,553 @@
 
     if (!choice || choice === "cancel") return;
 
-    const selectedDeckId = $("modalDeckSelect")?.value || state.activeDeckId;
+    const selectedDeckId = $("modalDeckSelect")?.value || activeDeck?.id;
     const qty = Math.max(1, toInt($("modalDeckQty")?.value || "1", 1));
 
-    if (selectedDeckId !== state.activeDeckId) {
-      setActiveDeckId(selectedDeckId);
-    }
-
-    const ok = addCardToActiveDeck(card, qty);
-    if (!ok) {
-      toast("No se pudo agregar la carta al deck.");
+    if (!selectedDeckId) {
+      toast("No hay deck destino.");
       return;
     }
 
-    toast(`✅ Agregada al deck "${getActiveDeck()?.name || "Deck"}"`);
+    Decks.setActiveDeck(selectedDeckId);
+
+    const result = await Decks.addCardToDeck(selectedDeckId, card, {
+      qty,
+      onDuplicate: async ({ existingQty, addQty }) => {
+        const duplicateChoice = await modalChoice({
+          title: "La carta ya está en el deck",
+          subtitle: `${cardName}`,
+          bodyHtml: `
+            <div class="emptyState">
+              <div>Copias actuales: <b>${existingQty}</b></div>
+              <div>Copias nuevas: <b>${addQty}</b></div>
+              <div class="muted" style="margin-top:8px;">Puedes sumar o reemplazar la cantidad.</div>
+            </div>
+          `,
+          buttons: [
+            { id: "increment", label: "Sumar", kind: "primary" },
+            { id: "replace", label: "Reemplazar", kind: "ghost" },
+            { id: "cancel", label: "Cancelar", kind: "ghost" },
+          ],
+        });
+
+        return duplicateChoice || "cancel";
+      },
+    });
+
+    if (!result?.ok) {
+      toast(result?.error || "No se pudo agregar la carta al deck.");
+      return;
+    }
+
+    renderDecksUI();
+    toast(`Agregada al deck "${Decks.getActiveDeck()?.name || "Deck"}" ✅`);
   }
 
-  function renderDecksUI(){
+  function renderDecksUI() {
     if (!dom.decks.root) return;
 
-    if (!state.activeDeckId && (state.decks[0]?.id)) setActiveDeckId(state.decks[0].id);
+    const decks = Decks.listDecks();
+    let activeDeck = Decks.getActiveDeck();
 
-    if (dom.decks.select) {
-      dom.decks.select.innerHTML = "";
-      (state.decks || []).forEach(d => {
-        const opt = document.createElement("option");
-        opt.value = d.id;
-        opt.textContent = d.name;
-        if (d.id === state.activeDeckId) opt.selected = true;
-        dom.decks.select.appendChild(opt);
-      });
+    if (!activeDeck && decks.length) {
+      Decks.setActiveDeck(decks[0].id);
+      activeDeck = Decks.getActiveDeck();
     }
 
-    if (dom.decks.list) {
-      dom.decks.list.innerHTML = "";
-      const frag = document.createDocumentFragment();
+    renderDeckSelect(decks, activeDeck);
+    renderDeckList(decks, activeDeck);
+    renderActiveDeckCards(activeDeck);
+  }
 
-      if (!state.decks.length) {
-        const div = document.createElement("div");
-        div.className = "emptyState";
-        div.textContent = "No hay decks. Crea uno y deja de sufrir.";
-        dom.decks.list.appendChild(div);
-      } else {
-        state.decks.forEach(d => {
-          const item = document.createElement("div");
-          item.className = "deckItem" + (d.id === state.activeDeckId ? " is-active" : "");
-          item.innerHTML = `
-            <div class="deckItem__main">
-              <div class="deckItem__name">${escapeHtml(d.name)}</div>
-              <div class="deckItem__sub">${escapeHtml(d.notes || "Sin notas")}</div>
-            </div>
-            <div class="deckItem__meta">
-              <div class="deckCount">${deckTotalQty(d)}</div>
-              <div class="muted" style="font-size:11px">${formatTimeAgo(d.updatedAt || d.createdAt)}</div>
-            </div>
-          `;
-          item.addEventListener("click", () => {
-            setActiveDeckId(d.id);
-            renderDecksUI();
-          });
-          frag.appendChild(item);
-        });
-        dom.decks.list.appendChild(frag);
-      }
+  function renderDeckSelect(decks, activeDeck) {
+    if (!dom.decks.select) return;
+
+    dom.decks.select.innerHTML = "";
+
+    if (!decks.length) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "Sin decks";
+      dom.decks.select.appendChild(option);
+      return;
     }
 
-    const deck = getActiveDeck();
-    safeText(dom.decks.title, deck?.name || "Decks");
-    safeText(dom.decks.meta, deck ? `${deck.cards.length} cartas · ${deckTotalQty(deck)} copias` : "Sin deck activo");
+    decks.forEach((deck) => {
+      const option = document.createElement("option");
+      option.value = deck.id;
+      option.textContent = deck.name;
 
-    if (dom.decks.cards) {
-      dom.decks.cards.innerHTML = "";
-
-      if (!deck) {
-        dom.decks.cards.innerHTML = `<div class="emptyState">Crea o selecciona un deck.</div>`;
-        return;
+      if (deck.id === activeDeck?.id) {
+        option.selected = true;
       }
 
-      if (!deck.cards.length) {
-        dom.decks.cards.innerHTML = `<div class="emptyState">Vacío. Como el alma de un Excel sin fórmulas.</div>`;
-        return;
-      }
+      dom.decks.select.appendChild(option);
+    });
+  }
 
-      const table = document.createElement("table");
-      table.className = "deckCardsTable";
-      table.innerHTML = `
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>Nombre</th>
-            <th style="text-align:right">Qty</th>
-            <th style="text-align:right">Acciones</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
+  function renderDeckList(decks, activeDeck) {
+    if (!dom.decks.list) return;
+
+    dom.decks.list.innerHTML = "";
+
+    if (!decks.length) {
+      dom.decks.list.innerHTML = `<div class="emptyState">No hay decks. Crea uno y deja de mirar el vacío.</div>`;
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+
+    decks.forEach((deck) => {
+      const stats = Decks.getDeckStats(deck.id);
+      const item = document.createElement("div");
+
+      item.className = `deckItem${deck.id === activeDeck?.id ? " is-active" : ""}`;
+
+      item.innerHTML = `
+        <div class="deckItem__main">
+          <div class="deckItem__name">${escapeHtml(deck.name)}</div>
+          <div class="deckItem__sub">${escapeHtml(deck.notes || "Sin notas")}</div>
+        </div>
+        <div class="deckItem__meta">
+          <div class="deckCount">${stats?.totalCopies || 0}</div>
+          <div class="muted" style="font-size:11px">${formatTimeAgo(deck.updatedAt || deck.createdAt)}</div>
+        </div>
       `;
 
-      const tbody = table.querySelector("tbody");
-      deck.cards.forEach(c => {
-        const tr = document.createElement("tr");
-        tr.innerHTML = `
-          <td>${escapeHtml(c.id)}</td>
-          <td>${escapeHtml(getCardLabel(c.id))}</td>
-          <td style="text-align:right">${c.qty}</td>
-          <td>
-            <div class="deckCardsRowActions">
-              <button class="smallbtn" data-act="minus">-1</button>
-              <button class="smallbtn" data-act="plus">+1</button>
-              <button class="smallbtn smallbtn--danger" data-act="del">Quitar</button>
-            </div>
-          </td>
-        `;
-        tr.querySelectorAll("button").forEach(btn => {
-          btn.addEventListener("click", () => {
-            const act = btn.dataset.act;
-            if (act === "del") return removeCardFromActiveDeck(c.id);
-            if (act === "plus") {
-              c.qty += 1;
-              deck.updatedAt = Date.now();
-              saveDecks();
-              renderDecksUI();
-              return;
-            }
-            if (act === "minus") {
-              c.qty = Math.max(1, c.qty - 1);
-              deck.updatedAt = Date.now();
-              saveDecks();
-              renderDecksUI();
-              return;
-            }
-          });
-        });
-        tbody.appendChild(tr);
+      item.addEventListener("click", () => {
+        Decks.setActiveDeck(deck.id);
+        renderDecksUI();
       });
 
-      dom.decks.cards.appendChild(table);
+      fragment.appendChild(item);
+    });
+
+    dom.decks.list.appendChild(fragment);
+  }
+
+  function renderActiveDeckCards(deck) {
+    safeText(dom.decks.title, deck?.name || "Decks");
+    safeText(dom.decks.meta, deck ? getDeckSummary(deck.id) : "Sin deck activo");
+
+    if (!dom.decks.cards) return;
+
+    dom.decks.cards.innerHTML = "";
+
+    if (!deck) {
+      dom.decks.cards.innerHTML = `<div class="emptyState">Crea o selecciona un deck.</div>`;
+      return;
     }
+
+    const cards = Decks.getDeckCards(deck.id);
+
+    if (!cards.length) {
+      dom.decks.cards.innerHTML = `<div class="emptyState">Vacío. Como un sobre recién abierto sin holográfica.</div>`;
+      return;
+    }
+
+    const table = document.createElement("table");
+    table.className = "deckCardsTable";
+
+    table.innerHTML = `
+      <thead>
+        <tr>
+          <th>Carta</th>
+          <th>Categoría</th>
+          <th style="text-align:right">Qty</th>
+          <th style="text-align:right">Acciones</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    `;
+
+    const tbody = table.querySelector("tbody");
+
+    cards.forEach((cardRef) => {
+      const row = findRowById(cardRef.id);
+      const cardObj = row ? rowToCardObject(row) : null;
+      const meta = {
+        ...(cardRef.meta || {}),
+        ...(cardObj || {}),
+      };
+
+      const tr = document.createElement("tr");
+
+      tr.innerHTML = `
+        <td>${escapeHtml(getCardLabel(cardRef.id, meta))}</td>
+        <td>${escapeHtml(normalizeCategoria(meta.categoria || "-"))}</td>
+        <td style="text-align:right">${cardRef.qty}</td>
+        <td>
+          <div class="deckCardsRowActions">
+            <button class="smallbtn" data-act="minus" type="button">-1</button>
+            <button class="smallbtn" data-act="plus" type="button">+1</button>
+            <button class="smallbtn smallbtn--danger" data-act="del" type="button">Quitar</button>
+          </div>
+        </td>
+      `;
+
+      tr.querySelectorAll("button").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const action = btn.dataset.act;
+
+          if (action === "del") {
+            Decks.removeCardFromDeck(deck.id, cardRef.id);
+          } else if (action === "plus") {
+            Decks.incrementCardQty(deck.id, cardRef.id, 1);
+          } else if (action === "minus") {
+            Decks.incrementCardQty(deck.id, cardRef.id, -1);
+          }
+
+          renderDecksUI();
+        });
+      });
+
+      tbody.appendChild(tr);
+    });
+
+    dom.decks.cards.appendChild(table);
   }
 
-  function deckTotalQty(deck){
-    return (deck?.cards || []).reduce((sum, c) => sum + Math.max(0, toInt(c.qty, 0)), 0);
+  function getDeckSummary(deckId) {
+    const stats = Decks.getDeckStats(deckId);
+
+    if (!stats) return "Sin deck activo";
+
+    const category = stats.byCategory || {};
+    const monsters = category.Monster || category.monster || 0;
+    const spells = category.Spell || category.spell || 0;
+    const traps = category.Trap || category.trap || 0;
+
+    return `${stats.uniqueCards} cartas únicas · ${stats.totalCopies} copias · ${monsters} Monstruos · ${spells} Magias · ${traps} Trampas`;
   }
 
-  function getCardLabel(cardId){
+  function getCardLabel(cardId, meta = {}) {
     const row = findRowById(cardId);
-    if (!row) return "(no encontrada en TSV)";
-    const name = String(getCell(row,"nombre") || "").trim();
-    const setc = String(getCell(row,"mazo") || "").trim();
-    const ed = String(getCell(row,"edicion") || "").trim();
-    return [name, setc, ed].filter(Boolean).join(" · ") || cardId;
+
+    if (row) {
+      const name = String(getCell(row, "nombre") || "").trim();
+      const setCode = String(getCell(row, "mazo") || "").trim();
+      const edition = String(getCell(row, "edicion") || "").trim();
+
+      return [name, setCode, edition].filter(Boolean).join(" · ") || cardId;
+    }
+
+    const name = meta.nombre || meta.name || "Carta no encontrada en TSV";
+    const setCode = meta.mazo || meta.set || "";
+    const edition = meta.edicion || meta.edition || "";
+
+    return [name, setCode, edition].filter(Boolean).join(" · ") || cardId;
   }
 
   /* =========================
-    STATS
+     STATS — MODULE
   ========================= */
-  function renderStats(){
+  function renderStats() {
     if (!dom.stats.root) return;
 
-    const data = (state.rows || []).slice(1);
-    if (!data.length) return;
+    const stats = Stats.computeFromTSV(state.rows || [], {
+      currency: "COP",
+      locale: "es-CO",
+      treatMissingQtyAs1: false,
+      requiredFields: ["nombre", "categoria", "mazo", "cantidad"],
+      topLimit: 10,
+    });
 
-    const idIdx = col("_id");
-    const qtyIdx = col("cantidad");
-    const priceIdx = col("precio");
+    const summary = Stats.summarize
+      ? Stats.summarize(stats)
+      : buildStatsSummaryFallback(stats);
 
-    const catIdx = col("categoria");
-    const typeIdx = col("tipo");
-    const setIdx = col("mazo");
-    const rarIdx = col("rareza");
-    const atrIdx = col("atributo");
-    const imgIdx = col("imagenurl");
+    safeText(dom.stats.totalCards, summary.registeredRows);
+    safeText(dom.stats.uniqueCards, summary.uniqueCards || summary.uniqueIds || 0);
+    safeText(dom.stats.totalQty, summary.totalCopies);
+    safeText(dom.stats.totalValue, Stats.formatMoney(summary.totalValue || 0, "COP", "es-CO"));
+    safeText(dom.stats.monsters, summary.monsters);
+    safeText(dom.stats.spells, summary.spells);
+    safeText(dom.stats.traps, summary.traps);
+    safeText(dom.stats.noImg, summary.noImage);
+    safeText(dom.stats.noPrice, summary.noPrice);
+    safeText(dom.stats.noQty, summary.noQty);
+    safeText(dom.stats.incomplete, summary.incomplete);
 
-    const totalRows = data.length;
-    const unique = new Set();
-    const cats = { monster:0, spell:0, trap:0 };
-    let totalQty = 0;
-    let totalValue = 0;
-    let noImg = 0;
-
-    const countMap = (idx) => {
-      const m = new Map();
-      if (idx < 0) return m;
-      for (const r of data) {
-        const k = String(r?.[idx] || "").trim();
-        if (!k) continue;
-        m.set(k, (m.get(k)||0) + 1);
-      }
-      return m;
-    };
-
-    for (const r of data) {
-      const id = idIdx >= 0 ? String(r?.[idIdx] || "") : "";
-      if (id) unique.add(id);
-
-      const cat = norm(catIdx >= 0 ? r?.[catIdx] : "");
-      if (cat === "monster" || cat === "monstruo" || cat === "monstruos") cats.monster++;
-      else if (cat === "spell" || cat === "magia" || cat === "magias") cats.spell++;
-      else if (cat === "trap" || cat === "trampa" || cat === "trampas") cats.trap++;
-
-      const q = toInt(qtyIdx >= 0 ? r?.[qtyIdx] : 0, 0);
-      totalQty += Math.max(0, q);
-
-      const p = toFloat(priceIdx >= 0 ? r?.[priceIdx] : 0, 0);
-      totalValue += Math.max(0, p) * Math.max(1, q || 1);
-
-      const img = imgIdx >= 0 ? String(r?.[imgIdx] || "").trim() : "";
-      if (!img) noImg++;
-    }
-
-    safeText(dom.stats.totalCards, totalRows);
-    safeText(dom.stats.uniqueCards, unique.size);
-    safeText(dom.stats.totalQty, totalQty);
-    safeText(dom.stats.totalValue, money(totalValue));
-    safeText(dom.stats.monsters, cats.monster);
-    safeText(dom.stats.spells, cats.spell);
-    safeText(dom.stats.traps, cats.trap);
-    safeText(dom.stats.noImg, noImg);
-
-    renderTopList(dom.stats.topTypes, countMap(typeIdx), 8);
-    renderTopList(dom.stats.topSets, countMap(setIdx), 8);
-    renderTopList(dom.stats.topRarities, countMap(rarIdx), 8);
-    renderTopList(dom.stats.topAttributes, countMap(atrIdx), 8);
+    renderStatsTopList(dom.stats.topTypes, stats.tables?.byType, 8, "copies");
+    renderStatsTopList(dom.stats.topSets, stats.tables?.bySetCode, 8, "copies");
+    renderStatsTopList(dom.stats.topRarities, stats.tables?.byRarity, 8, "copies");
+    renderStatsTopList(dom.stats.topAttributes, stats.tables?.byAttribute, 8, "copies");
   }
 
-  function renderTopList(container, map, limit = 8){
+  function fillEmptyStats() {
+    [
+      dom.stats.totalCards,
+      dom.stats.uniqueCards,
+      dom.stats.totalQty,
+      dom.stats.totalValue,
+      dom.stats.monsters,
+      dom.stats.spells,
+      dom.stats.traps,
+      dom.stats.noImg,
+      dom.stats.noPrice,
+      dom.stats.noQty,
+      dom.stats.incomplete,
+    ].forEach((el) => safeText(el, "0"));
+
+    [
+      dom.stats.topTypes,
+      dom.stats.topSets,
+      dom.stats.topRarities,
+      dom.stats.topAttributes,
+    ].forEach((el) => {
+      if (el) el.innerHTML = `<div class="muted">Sin datos.</div>`;
+    });
+  }
+
+  function renderStatsTopList(container, items, limit = 8, field = "copies") {
     if (!container) return;
-    const items = Array.from(map.entries()).sort((a,b) => b[1]-a[1]).slice(0, limit);
-    if (!items.length) { container.innerHTML = `<div class="muted">Sin datos.</div>`; return; }
-    container.innerHTML = items.map(([k,v]) =>
-      `<div style="display:flex; justify-content:space-between; gap:10px; padding:6px 0; border-bottom:1px solid rgba(148,163,184,.08)">
-        <span style="min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">${escapeHtml(k)}</span>
-        <span class="chip">${v}</span>
-      </div>`
-    ).join("");
+
+    const list = (items || []).slice(0, limit);
+
+    if (!list.length) {
+      container.innerHTML = `<div class="muted">Sin datos.</div>`;
+      return;
+    }
+
+    container.innerHTML = list
+      .map((item) => {
+        const value = field === "value"
+          ? Stats.formatMoney(item.value || 0, "COP", "es-CO")
+          : Stats.formatInt(item.copies || item.unique || 0, "es-CO");
+
+        return `
+          <div style="display:flex; justify-content:space-between; gap:10px; padding:6px 0; border-bottom:1px solid rgba(148,163,184,.08)">
+            <span style="min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">${escapeHtml(item.label || "—")}</span>
+            <span class="chip">${escapeHtml(value)}</span>
+          </div>
+        `;
+      })
+      .join("");
+  }
+
+  function buildStatsSummaryFallback(stats) {
+    return {
+      registeredRows: stats?.totals?.registeredRows || stats?.meta?.rows || 0,
+      uniqueCards: stats?.totals?.uniqueCards || 0,
+      uniqueIds: stats?.totals?.uniqueIds || 0,
+      totalCopies: stats?.totals?.totalCopies || 0,
+      totalValue: stats?.totals?.totalValue || 0,
+      monsters: stats?.totals?.monsters || 0,
+      spells: stats?.totals?.spells || 0,
+      traps: stats?.totals?.traps || 0,
+      noImage: stats?.diagnostics?.noImage || 0,
+      noPrice: stats?.diagnostics?.noPrice || 0,
+      noQty: stats?.diagnostics?.noQty || 0,
+      incomplete: stats?.diagnostics?.incomplete || 0,
+    };
   }
 
   /* =========================
-    ADVANCED SEARCH
+     ADVANCED SEARCH — MODULE
   ========================= */
-  function initAdvancedSearch(){
+  function initAdvancedSearch() {
     dom.adv.btnApply?.addEventListener("click", () => applyAdvancedSearch());
     dom.adv.btnReset?.addEventListener("click", () => resetAdvancedSearch());
+
+    getAdvancedFields().forEach((field) => {
+      field.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          applyAdvancedSearch();
+        }
+      });
+    });
   }
 
-  function resetAdvancedSearch(){
-    const fields = Object.values(dom.adv).filter(el => el && (el.tagName === "INPUT" || el.tagName === "SELECT"));
-    fields.forEach(el => { if (el) el.value = ""; });
-    safeText(dom.adv.countText, "0");
-    if (dom.adv.table) dom.adv.table.innerHTML = "";
-    toast("Filtros limpiados.");
+  function getAdvancedFields() {
+    return Object.values(dom.adv).filter((el) => {
+      return el && (el.tagName === "INPUT" || el.tagName === "SELECT");
+    });
   }
 
-  function applyAdvancedSearch(){
-    const all = (state.rows || []);
-    if (all.length < 2) return;
-
-    const header = all[0];
-    const data = all.slice(1);
-
-    const filters = {
-      q: (dom.adv.q?.value || "").trim().toLowerCase(),
-      nombre: (dom.adv.nombre?.value || "").trim().toLowerCase(),
-      mazo: (dom.adv.mazo?.value || "").trim().toLowerCase(),
-      categoria: (dom.adv.categoria?.value || "").trim().toLowerCase(),
-      tipo: (dom.adv.tipo?.value || "").trim().toLowerCase(),
-      subtipo: (dom.adv.subtipo?.value || "").trim().toLowerCase(),
-      atributo: (dom.adv.atributo?.value || "").trim().toLowerCase(),
-      rareza: (dom.adv.rareza?.value || "").trim().toLowerCase(),
-      idioma: (dom.adv.idioma?.value || "").trim().toLowerCase(),
-      edicion: (dom.adv.edicion?.value || "").trim().toLowerCase(),
-
-      anioMin: toInt(dom.adv.anioMin?.value, null),
-      anioMax: toInt(dom.adv.anioMax?.value, null),
-      lvlMin: toInt(dom.adv.lvlMin?.value, null),
-      lvlMax: toInt(dom.adv.lvlMax?.value, null),
-      atkMin: toInt(dom.adv.atkMin?.value, null),
-      atkMax: toInt(dom.adv.atkMax?.value, null),
-      defMin: toInt(dom.adv.defMin?.value, null),
-      defMax: toInt(dom.adv.defMax?.value, null),
-      qtyMin: toInt(dom.adv.qtyMin?.value, null),
-      qtyMax: toInt(dom.adv.qtyMax?.value, null),
-      priceMin: toFloat(dom.adv.priceMin?.value, null),
-      priceMax: toFloat(dom.adv.priceMax?.value, null),
-    };
-
-    const getText = (row, k) => String(getCell(row, k) || "").toLowerCase();
-    const getNum = (row, k) => toFloat(getCell(row, k), null);
-
-    const out = data.filter(row => {
-      if (filters.q) {
-        const hit = row.some(cell => String(cell||"").toLowerCase().includes(filters.q));
-        if (!hit) return false;
-      }
-      if (filters.nombre && !getText(row,"nombre").includes(filters.nombre)) return false;
-      if (filters.mazo && !getText(row,"mazo").includes(filters.mazo)) return false;
-
-      if (filters.categoria) {
-        const c = norm(getCell(row,"categoria"));
-        if (!c.includes(filters.categoria)) return false;
-      }
-
-      if (filters.tipo && !getText(row,"tipo").includes(filters.tipo)) return false;
-      if (filters.subtipo && !getText(row,"subtipo").includes(filters.subtipo)) return false;
-      if (filters.atributo && !getText(row,"atributo").includes(filters.atributo)) return false;
-      if (filters.rareza && !getText(row,"rareza").includes(filters.rareza)) return false;
-      if (filters.idioma && !getText(row,"idioma").includes(filters.idioma)) return false;
-      if (filters.edicion && !getText(row,"edicion").includes(filters.edicion)) return false;
-
-      if (!inRange(getNum(row,"anio"), filters.anioMin, filters.anioMax)) return false;
-      if (!inRange(getNum(row,"nivel"), filters.lvlMin, filters.lvlMax)) return false;
-      if (!inRange(getNum(row,"atk"), filters.atkMin, filters.atkMax)) return false;
-      if (!inRange(getNum(row,"def"), filters.defMin, filters.defMax)) return false;
-      if (!inRange(getNum(row,"cantidad"), filters.qtyMin, filters.qtyMax)) return false;
-      if (!inRange(getNum(row,"precio"), filters.priceMin, filters.priceMax)) return false;
-
-      return true;
+  function resetAdvancedSearch() {
+    getAdvancedFields().forEach((field) => {
+      field.value = "";
     });
 
-    safeText(dom.adv.countText, String(out.length));
+    safeText(dom.adv.countText, "0");
 
     if (dom.adv.table) {
-      renderAnyTable(dom.adv.table, [header, ...out], { hideKeys: ["_id"] });
+      dom.adv.table.innerHTML = "";
     }
 
-    toast(`Resultados avanzados: ${out.length}`);
+    toast("Filtros avanzados limpiados.");
   }
 
-  function inRange(v, min, max){
-    if (v == null || Number.isNaN(v)) {
-      if (min != null || max != null) return false;
-      return true;
+  function applyAdvancedSearch() {
+    if (!state.rows || state.rows.length < 2) {
+      toast("Primero carga la base de cartas.");
+      return;
     }
-    if (min != null && v < min) return false;
-    if (max != null && v > max) return false;
-    return true;
+
+    const query = buildAdvancedQuery();
+    const result = AdvancedSearch.filterRows(state.rows, query, {
+      includeHeaderInResult: true,
+      treatMissingQtyAs1: false,
+      requiredFields: ["nombre", "categoria", "mazo", "cantidad"],
+    });
+
+    safeText(dom.adv.countText, String(result.total || 0));
+
+    if (dom.adv.table) {
+      renderAnyTable(dom.adv.table, result.resultRows || [result.header, ...(result.rows || [])], {
+        hideKeys: ["_id"],
+      });
+    }
+
+    toast(`Resultados avanzados: ${result.total || 0}`);
   }
 
-  function renderAnyTable(tableEl, rows, { hideKeys = [] } = {}){
+  function buildAdvancedQuery() {
+    return {
+      text: valFrom(dom.adv.q),
+      textMode: "words",
+      textFields: FIELD_KEYS_FOR_TEXT_SEARCH.filter((key) => col(key) >= 0),
+
+      nombre: valFrom(dom.adv.nombre),
+      mazo: valFrom(dom.adv.mazo),
+      categoria: valFrom(dom.adv.categoria),
+      tipo: valFrom(dom.adv.tipo),
+      subtipo: valFrom(dom.adv.subtipo),
+      atributo: valFrom(dom.adv.atributo),
+      rareza: valFrom(dom.adv.rareza),
+      idioma: valFrom(dom.adv.idioma),
+      edicion: valFrom(dom.adv.edicion),
+
+      ranges: {
+        anio: {
+          min: valFrom(dom.adv.anioMin),
+          max: valFrom(dom.adv.anioMax),
+        },
+        nivel: {
+          min: valFrom(dom.adv.lvlMin),
+          max: valFrom(dom.adv.lvlMax),
+        },
+        atk: {
+          min: valFrom(dom.adv.atkMin),
+          max: valFrom(dom.adv.atkMax),
+        },
+        def: {
+          min: valFrom(dom.adv.defMin),
+          max: valFrom(dom.adv.defMax),
+        },
+        cantidad: {
+          min: valFrom(dom.adv.qtyMin),
+          max: valFrom(dom.adv.qtyMax),
+        },
+        precio: {
+          min: valFrom(dom.adv.priceMin),
+          max: valFrom(dom.adv.priceMax),
+        },
+      },
+    };
+  }
+
+  function renderAnyTable(tableEl, rows, options = {}) {
+    const { hideKeys = [] } = options;
+
     if (!tableEl) return;
 
-    const header = rows[0] || [];
-    const body = rows.slice(1);
+    const header = rows?.[0] || [];
+    const body = (rows || []).slice(1);
 
-    const hideIdx = new Set();
-    hideKeys.forEach(k => {
-      const idx = col(k);
-      if (idx >= 0) hideIdx.add(idx);
+    const hideIndexes = new Set();
+
+    hideKeys.forEach((key) => {
+      const index = col(key);
+      if (index >= 0) hideIndexes.add(index);
     });
 
-    const visibleCols = header.map((_,i)=>i).filter(i => !hideIdx.has(i));
+    const visibleCols = header
+      .map((_, index) => index)
+      .filter((index) => !hideIndexes.has(index));
 
     const thead = document.createElement("thead");
-    const trh = document.createElement("tr");
-    visibleCols.forEach(i => {
+    const headerRow = document.createElement("tr");
+
+    visibleCols.forEach((index) => {
       const th = document.createElement("th");
-      th.textContent = header[i] || "";
-      trh.appendChild(th);
+      th.textContent = header[index] || "";
+      headerRow.appendChild(th);
     });
-    thead.appendChild(trh);
+
+    thead.appendChild(headerRow);
 
     const tbody = document.createElement("tbody");
-    const frag = document.createDocumentFragment();
 
-    body.forEach(row => {
+    if (!body.length) {
       const tr = document.createElement("tr");
-      tr.tabIndex = 0;
-      const id = String(getCell(row,"_id") || "").trim();
-      if (id) tr.dataset.id = id;
+      const td = document.createElement("td");
 
-      visibleCols.forEach(i => {
-        const td = document.createElement("td");
-        td.textContent = row?.[i] || "";
-        tr.appendChild(td);
+      td.colSpan = Math.max(1, visibleCols.length);
+      td.innerHTML = `<div class="emptyState">Sin resultados avanzados.</div>`;
+
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    } else {
+      body.forEach((row) => {
+        const tr = document.createElement("tr");
+        const id = String(getCell(row, "_id") || "").trim();
+
+        tr.tabIndex = 0;
+        if (id) tr.dataset.id = id;
+
+        visibleCols.forEach((index) => {
+          const td = document.createElement("td");
+          td.textContent = row?.[index] || "";
+          tr.appendChild(td);
+        });
+
+        tr.addEventListener("click", () => {
+          openRowById(tr.dataset.id || "");
+        });
+
+        tr.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+
+          event.preventDefault();
+          openRowById(tr.dataset.id || "");
+        });
+
+        tbody.appendChild(tr);
       });
+    }
 
-      tr.addEventListener("click", () => {
-        const id = tr.dataset.id || "";
-        if (!id) return;
-        const r = findRowById(id);
-        if (!r) return;
-        openEdit(r, resolveSheetRowIndexById(id));
-      });
-
-      frag.appendChild(tr);
-    });
-
-    tbody.appendChild(frag);
     tableEl.innerHTML = "";
     tableEl.appendChild(thead);
     tableEl.appendChild(tbody);
   }
 
+  function valFrom(el) {
+    return String(el?.value || "").trim();
+  }
+
   /* =========================
-    MODAL (reusable) - robusto
+     MODAL
   ========================= */
-  function ensureModal(){
+  function ensureModal() {
     let modal = dom.modal;
 
-    // Si existe en HTML, igual “amarramos” handlers 1 vez.
     if (modal) {
       if (!modal.__bound) {
-        modal.__bound = true;
-
-        modal.addEventListener("click", (e) => {
-          const card = e.target.closest?.(".modal__card");
-          if (!card) closeModal();
-        });
-
-        // soporta ambos ids
-        modal.querySelector("#btnCloseModal")?.addEventListener("click", closeModal);
-        modal.querySelector("#modalClose")?.addEventListener("click", closeModal);
+        bindModalBaseEvents(modal);
       }
+
       return modal;
     }
 
-    // si no existe, lo creamos
     modal = document.createElement("div");
     modal.id = "modal";
     modal.className = "modal";
     modal.hidden = true;
     modal.setAttribute("aria-hidden", "true");
+
     modal.innerHTML = `
       <div class="modal__card" role="dialog" aria-modal="true" aria-label="Modal">
         <div class="modal__head">
@@ -1788,95 +2248,122 @@
         <div class="modal__actions" id="modalActions"></div>
       </div>
     `;
+
     document.body.appendChild(modal);
     dom.modal = modal;
 
-    modal.__bound = true;
-    modal.addEventListener("click", (e) => {
-      const card = e.target.closest?.(".modal__card");
-      if (!card) closeModal();
-    });
-    modal.querySelector("#btnCloseModal")?.addEventListener("click", closeModal);
+    bindModalBaseEvents(modal);
 
     return modal;
   }
 
-  function isModalOpen(){
-    return !!dom.modal && dom.modal.hidden === false;
+  function bindModalBaseEvents(modal) {
+    modal.__bound = true;
+
+    modal.addEventListener("click", (event) => {
+      const card = event.target.closest?.(".modal__card");
+      if (!card) closeModal();
+    });
+
+    modal.querySelector("#btnCloseModal")?.addEventListener("click", closeModal);
+    modal.querySelector("#modalClose")?.addEventListener("click", closeModal);
   }
 
-  function closeModal(){
+  function isModalOpen() {
+    return Boolean(dom.modal && dom.modal.hidden === false);
+  }
+
+  function closeModal() {
     const modal = ensureModal();
+
     modal.hidden = true;
     modal.setAttribute("aria-hidden", "true");
-    if (dom.drawer?.classList.contains("is-open")) $("nombre")?.focus();
+
+    if (dom.drawer?.classList.contains("is-open")) {
+      $("nombre")?.focus();
+    }
   }
 
-  function btnClassFromKind(kind){
-    const k = String(kind || "").toLowerCase();
-    if (k === "primary") return "btn btn--primary";
-    if (k === "danger") return "btn btn--danger";
-    if (k === "ghost") return "btn btn--ghost";
-    return "btn";
-  }
-
-  function modalChoice({ title, subtitle, bodyHtml, buttons }){
+  function modalChoice({ title, subtitle, bodyHtml, buttons }) {
     return new Promise((resolve) => {
       const modal = ensureModal();
+      const titleEl = modal.querySelector("#modalTitle");
+      const subtitleEl = modal.querySelector("#modalSubtitle");
+      const bodyEl = modal.querySelector("#modalBody");
+      const actionsEl = modal.querySelector("#modalActions");
 
-      const $t = modal.querySelector("#modalTitle");
-      const $s = modal.querySelector("#modalSubtitle");
-      const $b = modal.querySelector("#modalBody");
-      const $a = modal.querySelector("#modalActions");
+      safeText(titleEl, title || "Confirmación");
+      safeText(subtitleEl, subtitle || "");
+      safeHtml(bodyEl, bodyHtml || "");
 
-      if ($t) $t.textContent = String(title ?? "Confirmación");
-      if ($s) $s.textContent = String(subtitle ?? "");
-      if ($b) $b.innerHTML = String(bodyHtml ?? "");
-      if ($a) $a.innerHTML = "";
+      if (actionsEl) actionsEl.innerHTML = "";
 
-      const opts = Array.isArray(buttons) && buttons.length
+      const buttonOptions = Array.isArray(buttons) && buttons.length
         ? buttons
         : [{ id: "close", label: "Cerrar", kind: "ghost" }];
 
       let done = false;
+
       const finish = (value) => {
         if (done) return;
+
         done = true;
+        document.removeEventListener("keydown", onKey);
         closeModal();
         resolve(value);
       };
 
-      const onKey = (e) => { if (e.key === "Escape") finish(null); };
-      document.addEventListener("keydown", onKey, { once: true });
+      const onKey = (event) => {
+        if (event.key === "Escape") {
+          finish(null);
+        }
+      };
 
-      opts.forEach((btn, idx) => {
+      document.addEventListener("keydown", onKey);
+
+      buttonOptions.forEach((button, index) => {
         const el = document.createElement("button");
+
         el.type = "button";
-        el.className = btnClassFromKind(btn.kind);
-        el.textContent = String(btn.label ?? "OK");
-        el.addEventListener("click", () => finish(btn.id ?? btn.value ?? String(idx)));
-        $a?.appendChild(el);
+        el.className = btnClassFromKind(button.kind);
+        el.textContent = String(button.label || "OK");
+
+        el.addEventListener("click", () => {
+          finish(button.id ?? button.value ?? String(index));
+        });
+
+        actionsEl?.appendChild(el);
       });
 
       modal.hidden = false;
       modal.setAttribute("aria-hidden", "false");
-      setTimeout(() => modal.querySelector(".modal__actions button")?.focus?.(), 0);
+
+      setTimeout(() => {
+        modal.querySelector(".modal__actions button")?.focus?.();
+      }, 0);
     });
   }
 
-  async function modalPrompt({ title, subtitle, placeholder, initialValue, okLabel }){
-    const id = `mp_${Math.random().toString(36).slice(2,8)}`;
+  async function modalPrompt({ title, subtitle, placeholder, initialValue, okLabel }) {
+    const id = `mp_${Math.random().toString(36).slice(2, 8)}`;
+    let inputValue = String(initialValue || "");
+
     const choice = await new Promise((resolve) => {
-      const bodyHtml = `
-        <div style="display:grid; gap:10px;">
-          <div class="muted" style="line-height:1.4">${escapeHtml(subtitle || "")}</div>
-          <input id="${id}" class="input" type="text" placeholder="${escapeHtml(placeholder || "")}" value="${escapeHtml(initialValue || "")}" />
-        </div>
-      `;
       modalChoice({
         title: title || "Escribe",
         subtitle: "",
-        bodyHtml,
+        bodyHtml: `
+          <div style="display:grid; gap:10px;">
+            <div class="muted" style="line-height:1.4">${escapeHtml(subtitle || "")}</div>
+            <input
+              id="${id}"
+              class="input"
+              type="text"
+              placeholder="${escapeHtml(placeholder || "")}"
+              value="${escapeHtml(inputValue)}"
+            />
+          </div>
+        `,
         buttons: [
           { id: "ok", label: okLabel || "OK", kind: "primary" },
           { id: "cancel", label: "Cancelar", kind: "ghost" },
@@ -1884,45 +2371,68 @@
       }).then(resolve);
 
       setTimeout(() => {
-        const el = document.getElementById(id);
-        if (el) {
-          el.focus();
-          el.select?.();
-          el.addEventListener("keydown", (e) => {
-            if (e.key === "Enter") {
-              const v = el.value;
-              closeModal();
-              resolve("ok:" + v);
-            }
-          });
-        }
+        const input = document.getElementById(id);
+
+        if (!input) return;
+
+        input.focus();
+        input.select?.();
+
+        input.addEventListener("input", () => {
+          inputValue = input.value;
+        });
+
+        input.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") {
+            inputValue = input.value;
+            closeModal();
+            resolve("ok");
+          }
+        });
       }, 0);
     });
 
-    if (!choice) return "";
-    if (String(choice).startsWith("ok:")) return String(choice).slice(3).trim();
-
     if (choice !== "ok") return "";
-    const el = document.getElementById(id);
-    return (el?.value || "").trim();
+
+    const input = document.getElementById(id);
+
+    return String(input?.value ?? inputValue ?? "").trim();
+  }
+
+  function btnClassFromKind(kind) {
+    const value = String(kind || "").toLowerCase();
+
+    if (value === "primary") return "btn btn--primary";
+    if (value === "danger") return "btn btn--danger";
+    if (value === "ghost") return "btn btn--ghost";
+
+    return "btn";
   }
 
   /* =========================
-    HELPERS / UTIL
+     STATUS / TOAST
   ========================= */
-  function debounce(fn, wait){
-    let t = null;
-    return (...args) => {
-      clearTimeout(t);
-      t = setTimeout(() => fn(...args), wait);
-    };
+  function setStatus(kind, text) {
+    safeText(dom.statusText, text);
+
+    dom.statusDot?.classList.remove("is-ok", "is-loading", "is-error");
+
+    if (kind === "ok") {
+      dom.statusDot?.classList.add("is-ok");
+    } else if (kind === "loading") {
+      dom.statusDot?.classList.add("is-loading");
+    } else {
+      dom.statusDot?.classList.add("is-error");
+    }
   }
 
-  function toast(msg){
-    const m = String(msg || "").trim();
-    if (!m) return;
+  function toast(message) {
+    const text = String(message || "").trim();
+
+    if (!text) return;
 
     let host = document.getElementById("toastHost");
+
     if (!host) {
       host = document.createElement("div");
       host.id = "toastHost";
@@ -1937,7 +2447,8 @@
     }
 
     const el = document.createElement("div");
-    el.textContent = m;
+
+    el.textContent = text;
     el.style.padding = "10px 12px";
     el.style.borderRadius = "12px";
     el.style.background = "rgba(15,23,42,.88)";
@@ -1947,116 +2458,224 @@
     el.style.maxWidth = "92vw";
     el.style.textAlign = "center";
     el.style.backdropFilter = "blur(6px)";
+
     host.appendChild(el);
 
     setTimeout(() => {
       el.style.opacity = "0";
       el.style.transition = "opacity 180ms ease";
-      setTimeout(() => el.remove(), 220);
+
+      setTimeout(() => {
+        el.remove();
+      }, 220);
     }, NET.toastMs);
   }
 
-  function escapeHtml(s){
-    return String(s ?? "")
-      .replace(/&/g,"&amp;")
-      .replace(/</g,"&lt;")
-      .replace(/>/g,"&gt;")
-      .replace(/"/g,"&quot;")
-      .replace(/'/g,"&#039;");
+  /* =========================
+     NORMALIZERS
+  ========================= */
+  function getCategoryKey(value) {
+    const normalized = normalize(value);
+
+    for (const key of Object.keys(CATEGORY_META)) {
+      if (CATEGORY_META[key].aliases.includes(normalized)) {
+        return key;
+      }
+    }
+
+    return "";
   }
 
-  function norm(s){
-    return String(s ?? "")
+  function normalizeCategoria(value) {
+    const key = getCategoryKey(value);
+
+    if (key === "monster") return "Monster";
+    if (key === "spell") return "Spell";
+    if (key === "trap") return "Trap";
+
+    return String(value || "").trim();
+  }
+
+  function isMonsterCategoria(value) {
+    return getCategoryKey(value) === "monster";
+  }
+
+  function normalize(value) {
+    return String(value || "")
       .trim()
       .toLowerCase()
       .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g,"")
-      .replace(/\s+/g," ");
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/\s+/g, " ");
   }
 
-  function isFiniteInteger(v){
-    const n = Number(String(v).trim());
+  /* =========================
+     GENERIC HELPERS
+  ========================= */
+  function debounce(fn, wait) {
+    let timer = null;
+
+    return (...args) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => fn(...args), wait);
+    };
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  function isFiniteInteger(value) {
+    const n = Number(String(value).trim());
     return Number.isFinite(n) && Number.isInteger(n);
   }
 
-  function isFiniteNumber(v){
-    const n = Number(String(v).trim().replace(",", "."));
+  function isFiniteNumber(value) {
+    const n = parseLooseNumber(value);
     return Number.isFinite(n);
   }
 
-  function toInt(v, fallback = 0){
-    if (v == null) return fallback;
-    const n = parseInt(String(v).trim().replace(/[^\d\-]/g,""), 10);
-    return Number.isFinite(n) ? n : fallback;
+  function parseLooseNumber(value) {
+    const raw = String(value ?? "").trim();
+
+    if (!raw) return NaN;
+
+    let text = raw
+      .replace(/\s/g, "")
+      .replace(/COP/gi, "")
+      .replace(/\$/g, "");
+
+    const hasComma = text.includes(",");
+    const hasDot = text.includes(".");
+
+    if (hasComma && hasDot) {
+      const lastComma = text.lastIndexOf(",");
+      const lastDot = text.lastIndexOf(".");
+
+      if (lastComma > lastDot) {
+        text = text.replace(/\./g, "").replace(",", ".");
+      } else {
+        text = text.replace(/,/g, "");
+      }
+    } else if (hasComma && !hasDot) {
+      text = text.replace(",", ".");
+    }
+
+    text = text.replace(/[^\d.-]/g, "");
+
+    const n = Number(text);
+
+    return Number.isFinite(n) ? n : NaN;
   }
 
-  function toFloat(v, fallback = 0){
-    if (v == null) return fallback;
-    const n = Number(String(v).trim().replace(",", "."));
-    return Number.isFinite(n) ? n : fallback;
+  function toInt(value, fallback = 0) {
+    const n = parseLooseNumber(value);
+
+    if (!Number.isFinite(n)) return fallback;
+
+    return Math.floor(n);
   }
 
-  function makeId(){
-    const t = Date.now().toString(36);
-    const r = Math.random().toString(36).slice(2, 8);
-    return `ygo_${t}_${r}`;
+  function makeId() {
+    const time = Date.now().toString(36);
+    const rand = Math.random().toString(36).slice(2, 8);
+
+    return `ygo_${time}_${rand}`;
   }
 
-  function describeRow(row){
-    const name = String(getCell(row,"nombre") || "").trim();
-    const setc = String(getCell(row,"mazo") || "").trim();
-    const ed = String(getCell(row,"edicion") || "").trim();
-    const lang = String(getCell(row,"idioma") || "").trim();
-    const rar = String(getCell(row,"rareza") || "").trim();
-    return [name, setc, ed, lang, rar].filter(Boolean).join(" · ");
+  function describeRow(row) {
+    const name = String(getCell(row, "nombre") || "").trim();
+    const setCode = String(getCell(row, "mazo") || "").trim();
+    const edition = String(getCell(row, "edicion") || "").trim();
+    const language = String(getCell(row, "idioma") || "").trim();
+    const rarity = String(getCell(row, "rareza") || "").trim();
+
+    return [name, setCode, edition, language, rarity].filter(Boolean).join(" · ");
   }
 
-  function formatTimeAgo(ts){
-    const t = Number(ts || 0);
-    if (!Number.isFinite(t) || t <= 0) return "";
-    const diff = Date.now() - t;
-    const sec = Math.floor(diff/1000);
-    if (sec < 60) return `${sec}s`;
-    const min = Math.floor(sec/60);
-    if (min < 60) return `${min}m`;
-    const h = Math.floor(min/60);
-    if (h < 48) return `${h}h`;
-    const d = Math.floor(h/24);
-    return `${d}d`;
+  function formatTimeAgo(timestamp) {
+    const time = Number(timestamp || 0);
+
+    if (!Number.isFinite(time) || time <= 0) return "";
+
+    const diff = Date.now() - time;
+    const seconds = Math.floor(diff / 1000);
+
+    if (seconds < 60) return `${seconds}s`;
+
+    const minutes = Math.floor(seconds / 60);
+
+    if (minutes < 60) return `${minutes}m`;
+
+    const hours = Math.floor(minutes / 60);
+
+    if (hours < 48) return `${hours}h`;
+
+    const days = Math.floor(hours / 24);
+
+    return `${days}d`;
   }
 
-  function money(v){
-    const n = toFloat(v, 0);
+  function looksLikeUrl(value) {
     try {
-      return new Intl.NumberFormat("es-CO", { style:"currency", currency:"COP", maximumFractionDigits:0 }).format(n);
+      const url = new URL(String(value || "").trim());
+      return url.protocol === "http:" || url.protocol === "https:";
     } catch {
-      return `$${Math.round(n).toLocaleString("es-CO")}`;
+      return false;
     }
   }
 
-  function safeFilename(s){
-    return String(s || "deck")
-      .trim()
-      .toLowerCase()
-      .replace(/\s+/g,"_")
-      .replace(/[^a-z0-9_\-\.]/g,"")
-      .slice(0, 80) || "deck";
+  function safeFilename(value) {
+    return (
+      String(value || "deck")
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, "_")
+        .replace(/[^a-z0-9_\-.]/g, "")
+        .slice(0, 80) || "deck"
+    );
   }
 
-  function pickFile(accept){
+  function pickFile(accept) {
     return new Promise((resolve) => {
       const input = document.createElement("input");
+
       input.type = "file";
       input.accept = accept || "*/*";
       input.style.display = "none";
+
       document.body.appendChild(input);
+
       input.addEventListener("change", () => {
-        const f = input.files?.[0] || null;
+        const file = input.files?.[0] || null;
         input.remove();
-        resolve(f);
+        resolve(file);
       });
+
       input.click();
     });
   }
 
-})(); // ✅ cierre del IIFE, sin drama
+  function downloadText(text, filename, mimeType = "text/plain") {
+    const blob = new Blob([String(text || "")], {
+      type: mimeType,
+    });
+
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+
+    anchor.href = url;
+    anchor.download = filename || "download.txt";
+
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+
+    URL.revokeObjectURL(url);
+  }
+})();

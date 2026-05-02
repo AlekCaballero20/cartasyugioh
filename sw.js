@@ -1,22 +1,35 @@
 /* =============================================================================
-   sw.js — Yu-Gi-Oh! DB (GitHub Pages PWA) — v1.3.0
-   - App Shell precached (offline-ready)
-   - Navigation fallback to cached index.html (SPA-friendly)
-   - Same-origin assets: Stale-While-Revalidate (ignoring cache-bust params)
-   - TSV (Sheets published): Network-First + cache fallback (ignoring search if needed)
+   sw.js — Yu-Gi-Oh! TCG DB (GitHub Pages PWA) — v1.4.0
+   - App shell precached
+   - Navigation fallback to cached index.html
+   - Same-origin assets: Stale-While-Revalidate
+   - TSV published from Google Sheets: Network-First + cache fallback
+   - Cache-bust params ignored when useful
    - Avoids caching opaque / non-OK responses
-   - Supports SKIP_WAITING + CLIENTS_CLAIM messages
+   - Supports SKIP_WAITING, CLIENTS_CLAIM, CLEAR_CACHES, GET_VERSION
 ============================================================================= */
 
 "use strict";
 
-const VERSION = "ygo-db-v1.3.0"; // súbelo cuando publiques cambios
+/* =========================
+   VERSION / CACHES
+========================= */
+const VERSION = "ygo-db-v1.4.0";
+const CACHE_PREFIX = "ygo-db-";
+
 const STATIC_CACHE = `${VERSION}-static`;
 const DATA_CACHE = `${VERSION}-data`;
+const RUNTIME_CACHE = `${VERSION}-runtime`;
+
+const KNOWN_CACHES = new Set([
+  STATIC_CACHE,
+  DATA_CACHE,
+  RUNTIME_CACHE,
+]);
 
 /**
- * App shell (rutas relativas para GitHub Pages).
- * Mantén esto alineado con tu repo.
+ * App shell para GitHub Pages.
+ * Mantener alineado con index.html.
  */
 const APP_SHELL = [
   "./",
@@ -29,152 +42,228 @@ const APP_SHELL = [
   "./icons/icon-512.png",
 ];
 
-// Hosts de TSV (Sheets publicado)
-const TSV_HOSTS = new Set(["docs.google.com", "docs.googleusercontent.com"]);
+/**
+ * Hosts de datos externos.
+ */
+const TSV_HOSTS = new Set([
+  "docs.google.com",
+  "docs.googleusercontent.com",
+]);
 
-// Query params típicos de cache-bust que queremos ignorar al cachear assets
-const IGNORED_SEARCH_PARAMS = new Set(["_ts", "ts", "v", "ver", "cachebust"]);
+/**
+ * Query params típicos de cache-bust.
+ * Los quitamos para no duplicar entradas inútiles en Cache Storage.
+ */
+const IGNORED_SEARCH_PARAMS = new Set([
+  "_ts",
+  "ts",
+  "v",
+  "ver",
+  "version",
+  "cachebust",
+  "cache_bust",
+]);
 
 /* =========================
-   Install / Activate
+   INSTALL
 ========================= */
-
 self.addEventListener("install", (event) => {
   event.waitUntil(
     (async () => {
       const cache = await caches.open(STATIC_CACHE);
 
-      // Forzamos red en install para evitar que el SW nuevo quede con shell viejo.
-      // Si algo falla, igual dejamos que el SW se instale; la app funciona sin offline.
-      try {
-        await cache.addAll(APP_SHELL.map((u) => new Request(u, { cache: "reload" })));
-      } catch (err) {
-        // Silent: no rompemos instalación por un icon que no exista, etc.
-      }
+      /**
+       * No usamos cache.addAll directo porque si un solo archivo falla,
+       * aborta todo. Muy elegante, muy absurdo, muy navegador.
+       */
+      await Promise.allSettled(
+        APP_SHELL.map(async (url) => {
+          const req = new Request(url, {
+            cache: "reload",
+          });
+
+          try {
+            const resp = await fetch(req);
+
+            if (await shouldCacheResponse(resp, req, { allowHtml: true })) {
+              await cache.put(normalizeRequestForCache(req), resp.clone());
+            }
+          } catch (err) {
+            // Silencioso a propósito: la app debe poder instalar el SW aunque falte un ícono.
+          }
+        })
+      );
 
       await self.skipWaiting();
     })()
   );
 });
 
+/* =========================
+   ACTIVATE
+========================= */
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
-      // Borra caches antiguos
       const keys = await caches.keys();
-      await Promise.all(keys.filter((k) => !k.startsWith(VERSION)).map((k) => caches.delete(k)));
+
+      await Promise.all(
+        keys.map((key) => {
+          const isOurCache = key.startsWith(CACHE_PREFIX);
+          const shouldDelete = isOurCache && !KNOWN_CACHES.has(key);
+
+          return shouldDelete ? caches.delete(key) : Promise.resolve(false);
+        })
+      );
 
       await self.clients.claim();
     })()
   );
 });
 
-/**
- * Permite que tu app fuerce actualización:
- * navigator.serviceWorker.controller?.postMessage({ type: "SKIP_WAITING" })
- */
+/* =========================
+   MESSAGES
+========================= */
 self.addEventListener("message", (event) => {
   const type = event?.data?.type;
-  if (type === "SKIP_WAITING") self.skipWaiting();
-  if (type === "CLIENTS_CLAIM") self.clients.claim();
+
+  if (type === "SKIP_WAITING") {
+    self.skipWaiting();
+    return;
+  }
+
+  if (type === "CLIENTS_CLAIM") {
+    self.clients.claim();
+    return;
+  }
+
+  if (type === "CLEAR_CACHES") {
+    event.waitUntil(clearOwnCaches());
+    return;
+  }
+
+  if (type === "GET_VERSION") {
+    event.source?.postMessage?.({
+      type: "SW_VERSION",
+      version: VERSION,
+      caches: Array.from(KNOWN_CACHES),
+    });
+  }
 });
 
 /* =========================
-   Fetch
+   FETCH
 ========================= */
-
 self.addEventListener("fetch", (event) => {
   const req = event.request;
 
-  // Solo GET. POST/PUT/etc no se tocan.
   if (req.method !== "GET") return;
 
   const url = new URL(req.url);
 
-  // Solo http/https
   if (url.protocol !== "http:" && url.protocol !== "https:") return;
 
-  // 1) Navegación (HTML): network-first + fallback offline a index cacheado
+  /**
+   * 1) Navegación HTML:
+   * Network-first + fallback a index.html cacheado.
+   */
   if (isNavigationRequest(req)) {
     event.respondWith(navigationHandler(req));
     return;
   }
 
-  // 2) TSV publicado: network-first (fallback cache data)
+  /**
+   * 2) TSV publicado:
+   * Network-first para tener datos frescos.
+   * Fallback a caché si no hay internet.
+   */
   if (isTSVRequest(url)) {
-    event.respondWith(networkFirst(req, DATA_CACHE, { ignoreSearchOnFallback: true }));
+    event.respondWith(
+      networkFirst(req, DATA_CACHE, {
+        ignoreSearchOnFallback: true,
+        normalizeKey: true,
+      })
+    );
     return;
   }
 
-  // 3) Same-origin assets: stale-while-revalidate
+  /**
+   * 3) Assets same-origin:
+   * Stale-While-Revalidate para que cargue rápido y actualice en segundo plano.
+   */
   if (url.origin === self.location.origin) {
     event.respondWith(staleWhileRevalidate(req, STATIC_CACHE));
     return;
   }
 
-  // 4) Default: network (sin cache) para externos. Menos magia, menos bugs raros.
-  // Si quieres cachear externos, cambia esto por cacheFirst(...).
-  return;
+  /**
+   * 4) Externos:
+   * Network only. Menos magia, menos fantasmas.
+   */
 });
 
 /* =========================
-   Navigation handler
+   NAVIGATION HANDLER
 ========================= */
-
 async function navigationHandler(request) {
   const cache = await caches.open(STATIC_CACHE);
 
   try {
-    // Importante: pedir HTML explícitamente reduce respuestas raras en algunos hosts
     const net = await fetch(request);
 
     if (net && net.ok) {
-      // Cachea una copia de index.html para offline (SPA fallback)
-      // Nota: guardamos con key fija para match simple
-      await cache.put("./index.html", net.clone());
+      await cache.put(
+        normalizeRequestForCache(new Request("./index.html")),
+        net.clone()
+      );
     }
 
     return net;
   } catch (err) {
-    const cached = await cache.match("./index.html", { ignoreSearch: true });
+    const cached =
+      (await cache.match(normalizeRequestForCache(new Request("./index.html")), {
+        ignoreSearch: true,
+      })) ||
+      (await cache.match("./index.html", {
+        ignoreSearch: true,
+      })) ||
+      (await cache.match("./", {
+        ignoreSearch: true,
+      }));
+
     return (
       cached ||
-      new Response("Offline", {
+      new Response(getOfflineHtml(), {
         status: 503,
-        headers: { "Content-Type": "text/plain; charset=utf-8" },
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+        },
       })
     );
   }
 }
 
 /* =========================
-   Strategies
+   STRATEGIES
 ========================= */
-
-async function cacheFirst(request, cacheName) {
-  const cache = await caches.open(cacheName);
-  const key = normalizeRequestForCache_(request);
-
-  const cached = await cache.match(key, { ignoreSearch: true });
-  if (cached) return cached;
-
-  const net = await fetch(request);
-  if (await shouldCacheResponse_(net, request)) await cache.put(key, net.clone());
-  return net;
-}
-
 async function staleWhileRevalidate(request, cacheName) {
   const cache = await caches.open(cacheName);
-  const key = normalizeRequestForCache_(request);
+  const key = normalizeRequestForCache(request);
 
-  const cached = await cache.match(key, { ignoreSearch: true });
+  const cached = await cache.match(key, {
+    ignoreSearch: true,
+  });
 
   const updatePromise = (async () => {
     try {
       const net = await fetch(request);
-      if (await shouldCacheResponse_(net, request)) await cache.put(key, net.clone());
+
+      if (await shouldCacheResponse(net, request, { allowHtml: false })) {
+        await cache.put(key, net.clone());
+      }
+
       return net;
-    } catch (e) {
+    } catch (err) {
       return null;
     }
   })();
@@ -182,89 +271,135 @@ async function staleWhileRevalidate(request, cacheName) {
   return cached || (await updatePromise) || Response.error();
 }
 
-async function networkFirst(request, cacheName, opts = {}) {
+async function networkFirst(request, cacheName, options = {}) {
   const cache = await caches.open(cacheName);
+  const key = options.normalizeKey ? normalizeRequestForCache(request) : request;
 
   try {
     const net = await fetch(request);
-    if (await shouldCacheResponse_(net, request)) await cache.put(request, net.clone());
+
+    if (await shouldCacheResponse(net, request, { allowHtml: false })) {
+      await cache.put(key, net.clone());
+    }
+
     return net;
   } catch (err) {
-    const cached = await cache.match(request, {
-      ignoreSearch: Boolean(opts.ignoreSearchOnFallback),
+    const cached = await cache.match(key, {
+      ignoreSearch: Boolean(options.ignoreSearchOnFallback),
     });
 
     return (
       cached ||
-      new Response("Offline y sin datos en caché 😶", {
+      new Response("Offline y sin datos en caché.", {
         status: 503,
-        headers: { "Content-Type": "text/plain; charset=utf-8" },
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+        },
       })
     );
   }
 }
 
-/* =========================
-   Utils
-========================= */
+async function cacheFirst(request, cacheName) {
+  const cache = await caches.open(cacheName);
+  const key = normalizeRequestForCache(request);
 
-function isNavigationRequest(req) {
-  // req.mode === "navigate" es lo usual,
-  // pero algunos casos (Safari / reload) se benefician con Accept: text/html
-  if (req.mode === "navigate") return true;
-  const accept = req.headers.get("accept") || "";
+  const cached = await cache.match(key, {
+    ignoreSearch: true,
+  });
+
+  if (cached) return cached;
+
+  const net = await fetch(request);
+
+  if (await shouldCacheResponse(net, request, { allowHtml: false })) {
+    await cache.put(key, net.clone());
+  }
+
+  return net;
+}
+
+/* =========================
+   CACHE MANAGEMENT
+========================= */
+async function clearOwnCaches() {
+  const keys = await caches.keys();
+
+  await Promise.all(
+    keys.map((key) => {
+      return key.startsWith(CACHE_PREFIX) ? caches.delete(key) : Promise.resolve(false);
+    })
+  );
+}
+
+/* =========================
+   CHECKS
+========================= */
+function isNavigationRequest(request) {
+  if (request.mode === "navigate") return true;
+
+  const accept = request.headers.get("accept") || "";
   return accept.includes("text/html");
 }
 
 function isTSVRequest(url) {
   if (!TSV_HOSTS.has(url.hostname)) return false;
 
-  // Caso típico: output=tsv
-  const out = url.searchParams.get("output");
-  if (out && out.toLowerCase() === "tsv") return true;
+  const output = url.searchParams.get("output");
 
-  // Fallbacks
+  if (output && output.toLowerCase() === "tsv") {
+    return true;
+  }
+
   const href = url.href.toLowerCase();
-  if (href.includes("output=tsv")) return true;
-
   const path = url.pathname.toLowerCase();
-  return path.endsWith(".tsv") || path.includes("tsv");
+
+  return (
+    href.includes("output=tsv") ||
+    path.endsWith(".tsv") ||
+    path.includes("tsv")
+  );
 }
 
-async function shouldCacheResponse_(resp, request) {
-  if (!resp) return false;
+async function shouldCacheResponse(response, request, options = {}) {
+  if (!response) return false;
 
-  // Opaque = cross-origin sin CORS: inútil para cosas como TSV y puede inflar cache.
-  if (resp.type === "opaque") return false;
+  /**
+   * Respuestas opaque no sirven para leer ni validar.
+   * Cachearlas suele inflar Storage como si fuera colección de cartas repetidas.
+   */
+  if (response.type === "opaque") return false;
 
-  // Solo OK
-  if (!resp.ok) return false;
+  if (!response.ok) return false;
 
-  // Evita cachear respuestas "no-store"
-  const cc = (resp.headers.get("cache-control") || "").toLowerCase();
-  if (cc.includes("no-store")) return false;
+  const cacheControl = (response.headers.get("cache-control") || "").toLowerCase();
 
-  // No cacheamos HTML de navegación aquí (lo maneja navigationHandler)
+  if (cacheControl.includes("no-store")) return false;
+
   const accept = request?.headers?.get?.("accept") || "";
-  if (accept.includes("text/html")) return false;
+  const isHtml = accept.includes("text/html");
+
+  if (isHtml && !options.allowHtml) return false;
 
   return true;
 }
 
-/**
- * Normaliza requests para evitar duplicar entradas por ?_ts=...
- * - Solo limpiamos params “cache-bust”, mantenemos los demás.
- */
-function normalizeRequestForCache_(request) {
-  const url = new URL(request.url);
+/* =========================
+   REQUEST NORMALIZATION
+========================= */
+function normalizeRequestForCache(request) {
+  const url = new URL(request.url, self.location.href);
 
-  for (const k of Array.from(url.searchParams.keys())) {
-    if (IGNORED_SEARCH_PARAMS.has(k.toLowerCase())) url.searchParams.delete(k);
+  for (const key of Array.from(url.searchParams.keys())) {
+    if (IGNORED_SEARCH_PARAMS.has(key.toLowerCase())) {
+      url.searchParams.delete(key);
+    }
   }
-  if ([...url.searchParams.keys()].length === 0) url.search = "";
 
-  // Importante: no propagamos headers raros, ni "no-store" obligado.
-  // Para cache key y fetches de assets, esto es suficiente y más estable.
+  if ([...url.searchParams.keys()].length === 0) {
+    url.search = "";
+  }
+
   return new Request(url.toString(), {
     method: "GET",
     mode: request.mode,
@@ -273,6 +408,89 @@ function normalizeRequestForCache_(request) {
     referrer: request.referrer,
     referrerPolicy: request.referrerPolicy,
     integrity: request.integrity,
-    // Dejamos que el browser decida cache; el SW ya maneja Cache Storage
   });
+}
+
+/* =========================
+   OFFLINE FALLBACK
+========================= */
+function getOfflineHtml() {
+  return `<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Yu-Gi-Oh! TCG DB · Offline</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1020;
+      --panel: #0f172a;
+      --line: rgba(148,163,184,.2);
+      --text: #e5edff;
+      --muted: #8aa0c6;
+      --accent: #3b82f6;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        radial-gradient(900px 420px at 10% -10%, rgba(59,130,246,.18), transparent 60%),
+        radial-gradient(700px 420px at 90% 10%, rgba(34,197,94,.1), transparent 60%),
+        var(--bg);
+      color: var(--text);
+    }
+
+    main {
+      width: min(560px, 100%);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 22px;
+      background: rgba(15,23,42,.88);
+      box-shadow: 0 20px 70px rgba(0,0,0,.45);
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 24px;
+    }
+
+    p {
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    button {
+      margin-top: 12px;
+      border: 1px solid rgba(59,130,246,.8);
+      background: linear-gradient(180deg, #4f8cff, #2563eb);
+      color: white;
+      padding: 10px 14px;
+      border-radius: 12px;
+      cursor: pointer;
+      font: inherit;
+      font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Estás offline</h1>
+    <p>
+      No se pudo cargar la app ni encontrar una versión guardada en caché.
+      Cuando vuelva la conexión, recarga la página.
+    </p>
+    <button onclick="location.reload()">Reintentar</button>
+  </main>
+</body>
+</html>`;
 }
